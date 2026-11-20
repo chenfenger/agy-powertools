@@ -12,13 +12,13 @@
 
 ## 从 GitHub 安装
 
-使用用户提供的实际仓库地址。先读取仓库 README 和本文件，下载正式 Release 中的 ZIP，或克隆源码到临时工作目录，再执行上面的统一安装入口。仓库地址尚未提供时不要编造下载地址。
+使用用户提供的实际仓库地址。本仓库（chenfenger/agy-powertools）没有发布 Releases，直接克隆 `main` 分支安装，不要改用上游 WhiteBr1ck/agy-powertools 的 Release 包。先读取仓库 README 和本文件，下载正式 Release 中的 ZIP，或克隆源码到临时工作目录，再执行上面的统一安装入口。仓库地址尚未提供时不要编造下载地址。
 
 仅安装用户指定的项目。不修改其他插件、账户、权限或聊天文件，不在当前对话发送测试提示，不要求管理员权限。
 
 ## 可以直接复制的提示词
 
-> 请帮我安装 Agy Powertools：https://github.com/WhiteBr1ck/agy-powertools 。先阅读 README 和 docs/INSTALL_AGENT.md，使用项目提供的统一安装器，优先使用已有 Node.js 或 Antigravity 自带运行环境。保留其他插件、账户设置和聊天记录，不要强制退出当前客户端。安装后核对版本并告诉我结果；需要重启时最后提醒我。
+> 请帮我安装 Agy Powertools：https://github.com/chenfenger/agy-powertools 。克隆这个仓库的 main 分支（不要使用上游 WhiteBr1ck/agy-powertools 的 Releases），先阅读 README 和 docs/INSTALL_AGENT.md，使用项目提供的统一安装器，优先使用已有 Node.js 或 Antigravity 自带运行环境。保留其他插件、账户设置和聊天记录，不要强制退出当前客户端。安装后核对版本并告诉我结果；需要重启时最后提醒我。
 
 若使用已下载的本地目录，将提示词中的链接替换为本地目录路径即可。
 

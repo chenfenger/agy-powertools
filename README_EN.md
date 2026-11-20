@@ -24,6 +24,10 @@
   </p>
 </div>
 
+> [!NOTE]
+> This is a fork of [WhiteBr1ck/agy-powertools](https://github.com/WhiteBr1ck/agy-powertools). On top of upstream `main` it adds a reasoning-effort switcher, Markdown conversation export, and a bottom status bar (context usage, used/max tokens, cache hit rate, speed), and it follows upstream updates.
+> The instructions below install this repository's `main` branch. Upstream Release packages and in-app updates do not include these changes.
+
 ![Agy Powertools interface overview](docs/images/app-compact.png)
 
 ## What it does
@@ -60,11 +64,18 @@ It addresses four common friction points in daily Antigravity usage:
 
 Send the following prompt to Antigravity or another local coding agent:
 
-> Please install Agy Powertools from https://github.com/WhiteBr1ck/agy-powertools . Read README_EN.md and docs/INSTALL_AGENT.md first, and run the unified installer provided by the project using local Node.js or Antigravity's bundled runtime. Keep all other plugins, account settings, and chat history intact, and do not force-close the running client. Verify the installed version afterward and remind me if a client restart is needed.
+> Please install Agy Powertools from https://github.com/chenfenger/agy-powertools . Clone this repository's main branch (do not use the upstream WhiteBr1ck/agy-powertools Releases), read README_EN.md and docs/INSTALL_AGENT.md first, and run the unified installer provided by the project using local Node.js or Antigravity's bundled runtime. Keep all other plugins, account settings, and chat history intact, and do not force-close the running client. Verify the installed version afterward and remind me if a client restart is needed.
 
 #### Option 2: Command-line installation
 
-Download and extract the latest ZIP from [Releases](https://github.com/WhiteBr1ck/agy-powertools/releases) (or clone this repository), then run the installer from the project directory:
+Clone this repository (or click **Code → Download ZIP** on GitHub and extract it), then run the installer from the project directory:
+
+```sh
+git clone https://github.com/chenfenger/agy-powertools.git
+cd agy-powertools
+```
+
+Then run the installer:
 
 Windows (PowerShell):
 
@@ -81,6 +92,8 @@ sh ./install.sh
 If Node.js `>= 22.13` is already installed, you can also run `node scripts/install.mjs`. The installer never force-closes Antigravity, and reinstalling preserves your saved preferences. Restart Antigravity after finishing your current task; **Powertools** will appear in the left sidebar.
 
 ### In-app updates
+
+> This fork does not publish Releases, so **Check for updates** will not find new versions. To update, run `git pull` in the project directory and run the installer again (reinstalling keeps your settings).
 
 Open **Powertools -> Settings -> About** and click **Check for updates**. When a verified stable release is available, click **Install update**. The updater verifies the SHA-256 digest, backs up the previous installation, swaps files, and confirms the new runtime attaches cleanly, rolling back automatically if startup fails.
 

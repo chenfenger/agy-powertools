@@ -24,6 +24,10 @@
   </p>
 </div>
 
+> [!NOTE]
+> 这是 [WhiteBr1ck/agy-powertools](https://github.com/WhiteBr1ck/agy-powertools) 的分支版本：在上游 `main` 的基础上加了思考深度切换、导出会话为 Markdown、底部状态栏（上下文用量、已用/上限 token、缓存命中率、速度）等界面增强，并跟进上游更新。
+> 按下面的方法安装的是本仓库 `main` 分支。上游 Releases 里的安装包和应用内更新都不包含这些改动。
+
 ![Agy Powertools 整体使用界面](docs/images/app-compact.png)
 
 ## 这个工具是干嘛的
@@ -60,13 +64,20 @@
 
 将下面这段话直接发给 Antigravity 或其他可执行本地命令的 Agent：
 
-> 请帮我安装 Agy Powertools：https://github.com/WhiteBr1ck/agy-powertools 。先阅读 README 和 docs/INSTALL_AGENT.md，使用项目提供的统一安装器，优先使用已有 Node.js 或 Antigravity 自带运行环境。保留其他插件、账户设置和聊天记录，不要强制退出当前客户端。安装后核对版本并告诉我结果；需要重启时最后提醒我。
+> 请帮我安装 Agy Powertools：https://github.com/chenfenger/agy-powertools 。克隆这个仓库的 main 分支（不要使用上游 WhiteBr1ck/agy-powertools 的 Releases），先阅读 README 和 docs/INSTALL_AGENT.md，使用项目提供的统一安装器，优先使用已有 Node.js 或 Antigravity 自带运行环境。保留其他插件、账户设置和聊天记录，不要强制退出当前客户端。安装后核对版本并告诉我结果；需要重启时最后提醒我。
 
 详细步骤可参阅 [Agent 安装指南](docs/INSTALL_AGENT.md)。
 
 #### 方式二：命令行手动安装
 
-从 [Releases](https://github.com/WhiteBr1ck/agy-powertools/releases) 下载最新 ZIP 解压（或克隆本仓库），在项目目录运行：
+克隆本仓库（或在 GitHub 页面点 **Code → Download ZIP** 下载解压），在项目目录运行：
+
+```sh
+git clone https://github.com/chenfenger/agy-powertools.git
+cd agy-powertools
+```
+
+然后运行安装器：
 
 Windows（PowerShell）：
 
@@ -83,6 +94,8 @@ sh ./install.sh
 本机已有 Node.js `>= 22.13` 时也可直接运行 `node scripts/install.mjs`。安装器不会强制关闭客户端，覆盖安装会保留你已有的设置；完成手头任务后重启一次 Antigravity，左侧边栏出现 **Powertools** 即安装成功。
 
 ### 应用内更新
+
+> 本分支没有发布 Releases，应用内的「检查更新」找不到新版本。更新时在项目目录执行 `git pull`，再重新运行安装器即可（覆盖安装会保留设置）。
 
 打开 **Powertools -> 设置 -> 关于**，点击 **检查更新**。发现带完整校验文件的正式版本后点击 **立即更新**，更新器会自动校验、备份旧版、替换文件并确认新版本接入正常；若启动异常会自动回滚至旧版本。
 
