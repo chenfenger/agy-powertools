@@ -295,6 +295,103 @@ test('composer-driven message editing loads rich quotes and media into Lexical, 
   assert.ok(events.some(e => e[0] === 'optDispose'));
 });
 
+test('suspendEdit preserves edited text and media across session switch without leaking into bottom composer', async () => {
+  const makeSerialized = text => ({ text, toJSON: () => ({ root: { text } }) });
+  let editorState1 = makeSerialized('normal-draft'), attachments1 = [{ uri: 'normal.png' }];
+  const message = {
+    cascadeId: 'conv-a',
+    metadata: { index: 4 },
+    step: {
+      items: [{ chunk: { case: 'text', value: 'original msg' } }],
+      media: [{ uri: 'artifact://orig.png', mimeType: 'image/png' }],
+      artifactComments: []
+    }
+  };
+  const makeNode = tag => ({
+    tag, dataset: {}, className: '', textContent: '', children: [],
+    append(...items) { for (const item of items) { item.parentNode?.children?.splice?.(item.parentNode.children.indexOf(item), 1); item.parentNode = this; this.children.push(item); } },
+    addEventListener() {},
+    remove() { if (this.parentNode?.children) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); } this.parentNode = null; }
+  });
+  const buildSessionDom = (getEd, setEd, getAtt, setAtt) => {
+    const editor = { getEditorState: getEd, setEditorState: setEd, focus() {} };
+    const box = { lexicalRef: { current: editor }, getMediaAttachments: getAtt, setMediaAttachments: setAtt, floatingContentRef: { current: {} } };
+    const inputBox = { parentNode: null, nextSibling: null };
+    const bottomDock = {
+      isConnected: true, children: [inputBox],
+      insertBefore(node, before) {
+        node.parentNode?.children?.splice?.(node.parentNode.children.indexOf(node), 1);
+        const idx = before ? this.children.indexOf(before) : this.children.length;
+        this.children.splice(idx < 0 ? this.children.length : idx, 0, node);
+        node.parentNode = this; node.nextSibling = before || null;
+      }
+    };
+    inputBox.parentNode = bottomDock; inputBox.parentElement = bottomDock;
+    const service = { forkConversation() {}, async cancelCascadeInvocation() {}, async sendUserCascadeMessage(p) { return p; } };
+    const stepHandler = { resolveArtifactUrl: uri => `https://local.test/${encodeURIComponent(uri)}`, async revertToIndex() {} };
+    const element = {
+      isConnected: true, attrs: new Set(), children: [],
+      setAttribute(k) { this.attrs.add(k); }, removeAttribute(k) { this.attrs.delete(k); },
+      prepend(node) { node.parentNode = this; this.children.unshift(node); },
+      closest: () => ({ querySelector: () => inputBox }),
+      '__reactFiber$fixture': {
+        tag: 0, memoizedProps: message,
+        return: {
+          tag: 10, type: {}, memoizedProps: { value: { stepHandler } },
+          return: {
+            tag: 10, type: {}, memoizedProps: { value: { inputBoxRef: { current: box }, getLexicalEditor: () => editor } },
+            return: { tag: 10, type: {}, memoizedProps: { value: service }, return: null }
+          }
+        }
+      }
+    };
+    return { element, inputBox, bottomDock };
+  };
+
+  const dom1 = buildSessionDom(() => editorState1, v => { editorState1 = v; }, () => attachments1, v => { attachments1 = v; });
+  const context = vm.createContext({
+    document: { querySelector: () => dom1.element, createElement: makeNode },
+    HU: m => m.index,
+    LN: items => JSON.stringify({ root: { items } }),
+    IJ: (_, json) => ({ parsed: JSON.parse(json), toJSON: () => JSON.parse(json) }),
+    fetch: async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([9, 8]).buffer }),
+    I: { CascadeConfigSchema: {} }, tc: (_, v) => structuredClone(v), Wb: (_, v) => v
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  await adapter.beginEdit(dom1.element);
+  // User edits text and adds another image while editing turn #4
+  editorState1 = makeSerialized('in-progress edit');
+  attachments1 = [...attachments1, { uri: 'extra-paste.png', mimeType: 'image/png' }];
+
+  // User switches to another session -> suspendEdit restores original normal draft to bottom composer
+  const suspended = adapter.suspendEdit();
+  assert.ok(suspended);
+  assert.equal(adapter.pendingEdit, null);
+  assert.equal(dom1.inputBox.parentNode, dom1.bottomDock);
+  assert.deepEqual(JSON.parse(JSON.stringify(editorState1.parsed)), { root: { text: 'normal-draft' } });
+  assert.deepEqual(JSON.parse(JSON.stringify(attachments1)), [{ uri: 'normal.png' }]);
+  assert.equal(adapter.getSuspendedEdit('conv-a').stepIndex, 4);
+
+  // User switches back to conv-a with freshly mounted DOM & editor
+  let editorState2 = makeSerialized('normal-draft'), attachments2 = [{ uri: 'normal.png' }];
+  const dom2 = buildSessionDom(() => editorState2, v => { editorState2 = v; }, () => attachments2, v => { attachments2 = v; });
+  const resumed = adapter.resumeEdit(dom2.element);
+  assert.ok(resumed);
+  assert.equal(adapter.getSuspendedEdit('conv-a'), null);
+  assert.equal(dom2.inputBox.parentNode, adapter.pendingEdit.inlineHost);
+  assert.deepEqual(JSON.parse(JSON.stringify(editorState2.parsed)), { root: { text: 'in-progress edit' } });
+  assert.equal(attachments2.length, 2);
+  assert.equal(attachments2[1].uri, 'extra-paste.png');
+
+  // Canceling after resume still restores the original pre-edit bottom draft cleanly
+  adapter.cancelEdit();
+  assert.equal(dom2.inputBox.parentNode, dom2.bottomDock);
+  assert.deepEqual(JSON.parse(JSON.stringify(editorState2.parsed)), { root: { text: 'normal-draft' } });
+  assert.deepEqual(JSON.parse(JSON.stringify(attachments2)), [{ uri: 'normal.png' }]);
+});
+
 test('context override reaches the native config resolver and restores the default without mutating base config', () => {
   const service={forkConversation(){},sendUserCascadeMessage(payload){return payload;}};
   const element={'__reactFiber$fixture':{tag:10,type:{},memoizedProps:{value:service},return:null}};

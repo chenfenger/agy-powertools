@@ -18,7 +18,7 @@ function variant(version){const copy=structuredClone(original);copy.version=vers
   if(['lib/native-client.js','lib/native-ui.js'].includes(file.path))text=text.replaceAll(original.version,version);
   const bytes=Buffer.from(text);file.data=bytes.toString('base64');file.sha256=sha256(bytes);
 }return validatePackage(copy);}
-const older=variant('2.11.0'),newer=variant('2.13.0');
+const older=variant('2.11.0'),newer=variant('2.14.0');
 function sandbox(){const root=mkdtempSync(join(tmpdir(),'agy-lifecycle-')),home=join(root,'home'),paths=installationPaths(home);mkdirSync(join(paths.root,'config'),{recursive:true});atomicJson(paths.config,{plugins:{other:{enabled:true}},userSettings:{language:'zh-CN'},sidecars:{'other/tool':{keep:true}}});return{root,home,paths,clean:()=>rmSync(root,{recursive:true,force:true})};}
 
 test('install replaces obsolete files, preserves settings and other plugins, and records a usable backup',async()=>{
@@ -76,7 +76,7 @@ test('corrupt configuration is not overwritten during installation',async()=>{
 test('verified update installs in a sandbox; bad downloads leave the existing version untouched',async()=>{
   const s=sandbox();try{
     await installPlugin({bundle:older,home:s.home,stop});const bytes=encodePackage(newer),job=join(s.paths.data,'jobs','test');mkdirSync(job,{recursive:true});
-    const plan={format:1,home:s.home,version:newer.version,job,asset:{name:releaseName(newer.version),url:'https://github.com/test/project/releases/download/v2.13.0/package.bundle.gz',sha256:sha256(bytes)}};
+    const plan={format:1,home:s.home,version:newer.version,job,asset:{name:releaseName(newer.version),url:'https://github.com/test/project/releases/download/v2.14.0/package.bundle.gz',sha256:sha256(bytes)}};
     await runUpdateJob(plan,{fetcher:async()=>new Response(bytes),verify:async({paths,version})=>assert.equal(JSON.parse(readFileSync(join(paths.installed,'plugin.json'))).version,version)});
     assert.equal(updateStatus(s.home).status,'completed');assert.equal(existsSync(job),false);
     mkdirSync(job,{recursive:true});await assert.rejects(()=>runUpdateJob({...plan,asset:{...plan.asset,sha256:'0'.repeat(64)}},{fetcher:async()=>new Response(bytes),verify:async()=>{throw Error('should not install');}}),/校验/);assert.equal(JSON.parse(readFileSync(join(s.paths.installed,'plugin.json'))).version,newer.version);
@@ -86,14 +86,14 @@ test('verified update installs in a sandbox; bad downloads leave the existing ve
 test('update startup failure rolls back and reports rollback instead of success',async()=>{
   const s=sandbox();try{
     await installPlugin({bundle:older,home:s.home,stop});const bytes=encodePackage(newer),job=join(s.paths.data,'jobs','failure');mkdirSync(job,{recursive:true});
-    await assert.rejects(()=>runUpdateJob({format:1,home:s.home,version:newer.version,job,asset:{name:releaseName(newer.version),url:'https://github.com/test/project/releases/download/v2.13.0/package.bundle.gz',sha256:sha256(bytes)}},{fetcher:async()=>new Response(bytes),verify:async()=>{throw Error('cannot start');}}));
+    await assert.rejects(()=>runUpdateJob({format:1,home:s.home,version:newer.version,job,asset:{name:releaseName(newer.version),url:'https://github.com/test/project/releases/download/v2.14.0/package.bundle.gz',sha256:sha256(bytes)}},{fetcher:async()=>new Response(bytes),verify:async()=>{throw Error('cannot start');}}));
     assert.equal(updateStatus(s.home).status,'rolled-back');assert.equal(JSON.parse(readFileSync(join(s.paths.installed,'plugin.json'))).version,older.version);
   }finally{s.clean();}
 });
 
 test('update preparation refuses unconfigured repositories and stale user-selected versions',async()=>{
   const s=sandbox();try{
-    await assert.rejects(()=>startUpdate({home:s.home,currentVersion:original.version,expectedVersion:'2.13.0',project:{githubUrl:''}}),/版本/);
+    await assert.rejects(()=>startUpdate({home:s.home,currentVersion:original.version,expectedVersion:'2.14.0',project:{githubUrl:''}}),/版本/);
     assert.equal(existsSync(join(s.paths.data,'jobs')),false);
   }finally{s.clean();}
 });
@@ -112,7 +112,7 @@ test('update handoff copies a self-contained helper and rejects concurrent jobs'
 test('checksum-file fallback verifies the exact release asset and cleans partial jobs on error',async()=>{
   const s=sandbox();try{
     await installPlugin({bundle:older,home:s.home,stop});const bytes=encodePackage(newer),name=releaseName(newer.version),job=join(s.paths.data,'jobs','checksum');mkdirSync(job,{recursive:true});
-    const plan={format:1,home:s.home,version:newer.version,job,asset:{name,url:'https://github.com/test/project/releases/download/v2.13.0/package.bundle.gz',checksumUrl:'https://github.com/test/project/releases/download/v2.13.0/package.bundle.gz.sha256'}};
+    const plan={format:1,home:s.home,version:newer.version,job,asset:{name,url:'https://github.com/test/project/releases/download/v2.14.0/package.bundle.gz',checksumUrl:'https://github.com/test/project/releases/download/v2.14.0/package.bundle.gz.sha256'}};
     await runUpdateJob(plan,{fetcher:async url=>new Response(url.endsWith('.sha256')?sha256(bytes)+'  '+name+'\n':bytes),verify:async()=>{}});assert.equal(updateStatus(s.home).status,'completed');
     mkdirSync(job,{recursive:true});await assert.rejects(()=>runUpdateJob(plan,{fetcher:async()=>new Response(sha256(bytes)+'  another-file\n'),verify:async()=>{}}),/校验/);assert.equal(existsSync(job),false);
   }finally{s.clean();}
@@ -154,4 +154,18 @@ test('a separate update helper survives replacing its installed origin and confi
     }});
     await childPromise;assert.equal(updateStatus(s.home).status,'completed');assert.equal(JSON.parse(readFileSync(join(s.paths.installed,'plugin.json'))).version,newer.version);assert.ok(newClose);assert.equal(readdirSync(join(s.paths.data,'jobs')).length,0);
   }finally{clearInterval(timer);await oldClose?.();await newClose?.();s.clean();}
+});
+
+test('packaged README files strip remote badge images for Antigravity plugin overview',()=>{
+  for(const name of ['README.md','README_EN.md']){
+    const entry=original.files.find(file=>file.path===name);
+    assert.ok(entry);
+    const text=Buffer.from(entry.data,'base64').toString('utf8');
+    assert.equal(text.includes('img.shields.io'),false);
+    assert.equal(text.includes('/badge.svg'),false);
+    assert.equal(text.includes('plugin-badges:start'),false);
+    assert.equal(text.includes('\u00b7'),false);
+    assert.ok(text.includes(`v${original.version} | MIT License`));
+  }
+  assert.ok(readFileSync(resolve('README.md'),'utf8').includes('img.shields.io'));
 });

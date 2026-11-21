@@ -14,6 +14,28 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(createSettingsStore(directory).get().compact, false);
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
+    assert.equal(store.get().multiAccount, false);
+    assert.equal(store.get().accountSwitcher, true);
+    assert.equal(store.get().accountViewMode, 'list');
+    assert.equal(store.get().accountQuotaWindow, '5h');
+    assert.equal(store.get().autoSwitchAccount, false);
+    store.set({ multiAccount: true, accountSwitcher: false, accountViewMode: 'card', accountQuotaWindow: 'weekly', autoSwitchAccount: true });
+    assert.equal(store.get().multiAccount, true);
+    assert.equal(store.get().accountSwitcher, false);
+    assert.equal(store.get().accountViewMode, 'card');
+    assert.equal(store.get().accountQuotaWindow, 'weekly');
+    assert.equal(store.get().autoSwitchAccount, true);
+    store.set({ multiAccount: false, accountSwitcher: true, accountViewMode: 'list', accountQuotaWindow: '5h', autoSwitchAccount: false });
+    assert.equal(store.get().proxyEnabled, false);
+    assert.equal(store.get().proxyUrl, '');
+    assert.equal(store.get().proxyBypass, 'localhost,127.0.0.1,::1');
+    assert.equal(store.get().proxyForceHttp1, false);
+    store.set({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897/', proxyBypass: '192.168.0.0/16', proxyForceHttp1: true });
+    assert.equal(store.get().proxyEnabled, true);
+    assert.equal(store.get().proxyUrl, 'http://127.0.0.1:7897');
+    assert.equal(store.get().proxyBypass, 'localhost,127.0.0.1,::1,192.168.0.0/16');
+    assert.equal(store.get().proxyForceHttp1, true);
+    store.set({ proxyEnabled: false, proxyUrl: '', proxyBypass: 'localhost,127.0.0.1,::1', proxyForceHttp1: false });
     assert.equal(store.get().sidebarProjectLimit, 0);
     store.set({ sidebarProjectLimit: 3 }); assert.equal(store.get().sidebarProjectLimit, 3);
     store.set({ sidebarProjectLimit: -1 }); assert.equal(store.get().sidebarProjectLimit, -1);
@@ -24,7 +46,7 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { unknown: true }, { toString: false }, {language:'invalid'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { unknown: true }, { toString: false }, {language:'invalid'}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
   } finally { rmSync(directory, { recursive: true, force: true }); }

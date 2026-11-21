@@ -150,8 +150,15 @@ test('executable discovery, post-update prompt guards, and relaunch scheduling p
     assert.equal(spawned[0].opts.env.AGY_RELAUNCH_TARGET, exe);
     assert.ok(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT.endsWith('relaunch-antigravity.ps1'));
     assert.ok(existsSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT));
-    assert.ok(spawned[0].args.join(' ').includes('Win32_Process'));
+    assert.equal(spawned[0].opts.detached, undefined);
+    assert.ok(spawned[0].args.includes('-EncodedCommand'));
+    const encodedIdx = spawned[0].args.indexOf('-EncodedCommand');
+    const decodedLauncher = Buffer.from(spawned[0].args[encodedIdx + 1], 'base64').toString('utf16le');
+    assert.ok(decodedLauncher.includes('FindWindowSW'));
+    assert.ok(decodedLauncher.includes('ShellExecute'));
+    assert.ok(decodedLauncher.includes('CreateProcessW'));
     const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psBody.includes('Start-Sleep -Milliseconds 350'));
     assert.ok(psBody.includes('--remote-debugging-port=0'));
     assert.ok(psBody.includes('Remove-Item -LiteralPath $PSCommandPath'));
     assert.equal(shouldPromptPostUpdate({ dataDir, installDir, env: { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:5000' }, now: now + 1000 }).prompt, false);
@@ -375,4 +382,90 @@ test('isRemoteSshEnvironment detects headless SSH remote hosts without false pos
   assert.equal(isRemoteSshEnvironment({ platform: 'win32', env: { SSH_CONNECTION: '1.2.3.4 22' } }), false);
   const html = renderAuxPaneHtml({ version: '2.12.8', language: 'zh-CN' });
   assert.ok(html.includes('当前处于 SSH 远端模式'));
+});
+
+test('scheduleRelaunchWithDebugPort reads saved proxy settings across platforms without creating shortcuts', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-relaunch-proxy-'));
+  try {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+      proxyEnabled: true,
+      proxyUrl: 'socks5h://127.0.0.1:7897',
+      proxyBypass: '192.168.0.0/16',
+      proxyForceHttp1: true
+    }));
+
+    // Windows: reads settings.json automatically (so account switch & update relaunch preserve proxy)
+    const winExe = join(root, 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe');
+    mkdirSync(join(root, 'AppData', 'Local', 'Programs', 'antigravity'), { recursive: true });
+    writeFileSync(winExe, '');
+    const winSpawned = [];
+    const winRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      spawnProcess(cmd, args, opts) { winSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(winRes.proxyActive, true);
+    const psBody = readFileSync(winSpawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psBody.includes("$env:HTTPS_PROXY = 'socks5h://127.0.0.1:7897'"));
+    assert.ok(psBody.includes("$env:NO_PROXY = 'localhost,127.0.0.1,::1,192.168.0.0/16'"));
+    assert.ok(psBody.includes("$env:GODEBUG = 'http2client=0'"));
+    assert.ok(psBody.includes("'--proxy-server=socks5://127.0.0.1:7897'"));
+    assert.ok(psBody.includes("'--proxy-bypass-list=localhost;127.0.0.1;[::1];192.168.0.0/16'"));
+
+    // macOS: injects env + --env flags + Chromium proxy args and clears helper vars
+    const macApp = join(root, 'Antigravity.app');
+    mkdirSync(join(macApp, 'Contents', 'Resources', 'bin'), { recursive: true });
+    const macLs = join(macApp, 'Contents', 'Resources', 'bin', 'language_server');
+    writeFileSync(macLs, '');
+    const macSpawned = [];
+    const macRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'darwin',
+      env: { ANTIGRAVITY_AGENTAPI_EXE: macLs },
+      spawnProcess(cmd, args, opts) { macSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(macRes.proxyActive, true);
+    assert.equal(macSpawned[0].opts.env.AGY_PROXY_URL, 'socks5h://127.0.0.1:7897');
+    assert.equal(macSpawned[0].opts.env.AGY_PROXY_CHROME_SERVER, 'socks5://127.0.0.1:7897');
+    assert.ok(macSpawned[0].args[1].includes('--env "HTTPS_PROXY=$p_url"'));
+    assert.ok(macSpawned[0].args[1].includes('--proxy-server=$p_chrome'));
+    assert.ok(macSpawned[0].args[1].includes('unset AGY_PROXY_URL'));
+
+    // Linux: exports env + passes Chromium args
+    const linExe = join(root, 'antigravity');
+    writeFileSync(linExe, '');
+    const linSpawned = [];
+    const linRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'linux',
+      env: { APPIMAGE: linExe },
+      spawnProcess(cmd, args, opts) { linSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(linRes.proxyActive, true);
+    assert.ok(linSpawned[0].args[1].includes('export HTTP_PROXY="$p_url"'));
+    assert.ok(linSpawned[0].args[1].includes('--proxy-server=$p_chrome'));
+
+    // Disabled proxy: Windows relaunch explicitly clears stale proxy env vars
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ proxyEnabled: false, proxyUrl: 'http://127.0.0.1:7897' }));
+    const offSpawned = [];
+    const offRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      spawnProcess(cmd, args, opts) { offSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(offRes.proxyActive, false);
+    const psOffBody = readFileSync(offSpawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psOffBody.includes('Remove-Item Env:HTTP_PROXY'));
+    assert.ok(!psOffBody.includes('--proxy-server='));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

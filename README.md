@@ -2,14 +2,16 @@
   <img src="assets/logo.svg" width="72" height="72" alt="Agy Powertools Logo" />
   <h1>Agy Powertools</h1>
   <p><strong>Antigravity 2.0 增强插件</strong></p>
+  <!-- plugin-badges:start -->
   <p>
-    <a href="https://github.com/WhiteBr1ck/agy-powertools/releases"><img src="https://img.shields.io/github/v/release/WhiteBr1ck/agy-powertools?label=Release&color=2563eb" alt="Release" /></a>
-    <a href="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml"><img src="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-16a34a" alt="MIT License" /></a>
-    <img src="https://img.shields.io/badge/Antigravity-2.33.0-0f172a" alt="Antigravity 2.33.0" />
-    <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933" alt="Node.js >= 22.13" />
-    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-475569" alt="Platform" />
+    <a href="https://github.com/WhiteBr1ck/agy-powertools/releases"><img src="https://img.shields.io/github/v/release/WhiteBr1ck/agy-powertools?label=Release&color=2563eb" height="20" alt="Release" /></a>
+    <a href="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml"><img src="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml/badge.svg" height="20" alt="CI" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-16a34a" height="20" alt="MIT License" /></a>
+    <img src="https://img.shields.io/badge/Antigravity-2.34.0-0f172a" height="20" alt="Antigravity 2.34.0" />
+    <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933" height="20" alt="Node.js >= 22.13" />
+    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-475569" height="20" alt="Platform" />
   </p>
+  <!-- plugin-badges:end -->
   <p>
     <strong>简体中文</strong> |
     <a href="README_EN.md">English</a>
@@ -49,6 +51,8 @@
 - **右侧任务进度、常驻目录与未读提醒**：在右侧概览区实时展示任务清单进度、最近工具活动与本轮计时，支持常驻左侧轮次目录，并在后台对话完成时显示任务栏未读数字与高亮提醒。
 - **原生界面中英双语本地化**：支持插件面板与 Antigravity 常用原生侧栏、菜单、快捷键及设置页面的中英文无闪烁切换。
 - **本地用量、请求与额度面板**：在左侧栏新增 `Powertools` 管理页，汇总 53 周用量热力图、模型健康时间线、Token 与参考费用双圆环、请求筛选、报错一键复制、订阅限额进度条与官方参考单价。
+- **多账号切换与额度管理（默认关闭）**：基于操作系统原生凭据库本地隔离和切换多个 Google 账号，不落明文令牌；在侧栏底部整合账号快捷切换与原生设置入口，支持 5 小时 / 周限额查看、列表/卡片双视图、拖动排序、凭证校验及耗尽自动切号。
+- **免 TUN 应用级独立代理（默认关闭）**：不改客户端安装文件与系统快捷方式，通过协议 / 主机 / 端口三段配置在重启时为 Antigravity 注入代理参数与环境变量，内置 HTTP CONNECT / SOCKS5 连通性测试、可选 `GODEBUG=http2client=0` 缓解 `EOF` 断连以及冷启动未启用一键重启提醒。
 - **会话增强与在线校验更新**：支持实验性长上下文目标（`默认` / `256K` / `500K` / `1M`）、可选并行检索与读取引导，以及带 SHA-256 校验与失败自动回滚的应用内更新。
 
 ## 安装与卸载
@@ -156,6 +160,18 @@ sh ./uninstall.sh
 
 默认将插件面板及 Antigravity 常用原生界面（侧栏入口、菜单操作、额度提示、快捷键面板和常用设置说明）显示为简体中文，也可在设置中随时切回 `English`。翻译引擎在首屏渲染阶段即介入，避免英文闪烁，同时严格排除消息正文、输入框和代码块，确保对话文本与代码原样呈现。
 
+### 6. 多账号切换与额度管理（可选开启）
+
+该功能默认关闭，可在 **Powertools -> 设置 -> 账号与切换** 中确认风险提示后开启：
+- **本地原生凭据库隔离**：通过 Windows 凭据管理器、macOS 钥匙串或 Linux Secret Service 备份与切换多个账号的登录态，不在本地落盘明文令牌，并内置防覆盖锁与凭据哈希查重。
+- **侧栏快捷切换与全量管理**：在左侧栏底部整合当前账号头像、套餐铭牌、备注标签与原生「设置」入口，点击可查看各账号 5 小时 / 周限额并一键切换重启；在 **Powertools -> 账号与额度** 页支持列表/卡片双视图、拖动排序、禁用拦截、刷新额度、凭证校验以及可选耗尽自动切号。
+
+### 7. 免 TUN 应用级独立代理（可选开启）
+
+针对不想开启系统全局代理或 TUN 网卡、只想让 Antigravity 单独走代理的场景，可在 **Powertools -> 设置 -> 网络代理** 开启：
+- **免改文件、免建快捷方式**：不修改 `app.asar` 也不改动桌面快捷方式，通过协议下拉（`HTTP` / `SOCKS5` / `HTTPS`）+ 主机/IP + 端口三段输入（支持粘贴完整地址自动拆填），在重启 Antigravity 时统一注入 `--proxy-server`、`--proxy-bypass-list` 与 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（强制保底本地回环地址）。
+- **连通性测试、冷启动提醒与切号协同**：内置真实 HTTP CONNECT / SOCKS5 隧道测试和重启前端口监听预检，可选 `GODEBUG=http2client=0`（强制 HTTP/1.1 缓解 `Post: EOF` 断连）；下次正常冷启动若检测到代理尚未生效，会在右下角提示一键重启开启；多账号切换与升级重启会自动保留当前代理配置，互不冲突。
+
 ## 界面截图
 
 ### 原生界面与上下文浮窗
@@ -224,6 +240,16 @@ sh ./uninstall.sh
 | 项目默认显示会话数 | `默认 (6)` | 控制侧栏每个项目默认展示的会话数量（可选 `默认 (6)` / `1` / `2` / `3` / `4` / `5` / `10` / `全部展开`），超出部分收起至「查看全部」 |
 | 任务栏未读提醒 | 开启 | 后台对话完成时在任务栏标题显示未读数字并触发 Windows 原生高亮提醒，切回查看后自动消除 |
 
+### 账号与切换
+
+| 配置项 | 默认值 | 作用说明 |
+| --- | --- | --- |
+| 启用多账号切换 | 关闭 | 默认关闭，首次开启需确认 Google / Antigravity 单账号风险提示。使用本机系统原生凭据库（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service）备份和切换登录态，不落明文令牌 |
+| 侧栏账号切换器 | 开启（总开关启用后可见） | 在左侧栏底部整合快捷账号切换浮窗与原生「设置」入口，支持 5H / 周配额周期切换与一键刷新全部额度 |
+| 额度耗尽自动切换 | 关闭（总开关启用后可见） | 当前账号 5 小时或周限额耗尽时，自动切换到剩余额度最充足的已启用账号并重启生效（含 120 秒冷却与对话运行中延后保护） |
+| 账号管理默认视图 | `列表视图` | 设置「账号与额度」页面的默认展示样式，可选 `列表视图` 或 `卡片视图`，均支持拖动排序与凭证校验 |
+| 默认展示额度周期 | `5 小时限额` | 控制侧栏浮窗与账号列表默认展示 `5 小时限额` 或 `周限额` |
+
 ### 统计与进度
 
 | 配置项 | 默认值 | 作用说明 |
@@ -244,6 +270,13 @@ sh ./uninstall.sh
 | 消息编辑功能 | 开启 | 提供 Antigravity 默认未提供的消息编辑功能，在原消息位置打开原生输入框（支持引用与传图），修改并重新生成回答 |
 | 文件右键菜单 | 开启 | 右键消息中的本地 `file://` 文件链接，支持用默认应用打开、打开所在文件夹、复制文件或复制路径 |
 
+### 网络代理
+
+| 配置项 | 默认值 | 作用说明 |
+| --- | --- | --- |
+| 启用独立代理（免 TUN） | 关闭 | 默认关闭。不修改 `app.asar` 与系统快捷方式，通过重启为 Antigravity 注入 `--proxy-server`、`--proxy-bypass-list` 及 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`；支持协议下拉 + 主机/IP + 端口三段输入、真实 HTTP CONNECT / SOCKS5 连通性测试、本地端口预检以及冷启动未启用时一键重启提醒 |
+| 强制 HTTP/1.1（缓解 EOF） | 关闭（启用代理后可见） | 给后端注入 `GODEBUG=http2client=0`，禁用 Go HTTP/2 长连接复用，缓解停顿后的 `Post: EOF` 断连 |
+
 ### 上下文（实验性）
 
 | 配置项 | 默认值 | 作用说明 |
@@ -260,6 +293,23 @@ sh ./uninstall.sh
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | 个人设置（`settings.json`）、组件缓存与官方参考单价缓存目录 |
 
 ## 更新日志
+
+### v2.13.0
+
+本次是一个大版本更新，重点新增 **多账号切换与额度管理** 与 **免 TUN 应用级独立代理** 两项核心功能，并完成 Antigravity 2.34.0 适配与多项修复。
+
+- **适配 Antigravity 2.34.0**：更新通知吐司组件（`um`）的绑定特征并调整为可选降级绑定，修复升级 `2.34.0` 后插件未挂载的问题。
+- **新增多账号切换（默认关闭，需确认风险后启用）**：
+  - 使用操作系统原生凭据库（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service）本地隔离和切换多个 Google 账号，不落明文令牌，含 `pendingSwitch` 防覆盖锁与凭据哈希查重。
+  - 侧栏底部整合账号切换器与原生「设置」入口，「账号与额度」管理页支持列表/卡片双视图、拖动排序、禁用账号拦截切换、5H / 周周期持久化切换、`Argon` 分组识别、一键刷新额度与凭据校验，以及可选耗尽自动切号。
+  - 按账号维度隔离配额周期采样，避免多号切换串数据；改进 Windows 自动重启为 UTF-16LE `-EncodedCommand` + Explorer Desktop COM 脱离 Job Object 拉起重启脚本。
+- **新增免快捷方式应用级代理（免 TUN，默认关闭）**：
+  - 不修改客户端安装文件与快捷方式，在「设置 -> 网络代理」提供协议下拉（HTTP / SOCKS5 / HTTPS）+ 主机/IP + 端口三段输入（支持粘贴完整地址自动拆填）、强制保留本地回环的 `NO_PROXY`、真实 HTTP CONNECT / SOCKS5 连通性测试、可选 `GODEBUG=http2client=0`（强制 HTTP/1.1 缓解 `EOF`）以及重启前端口监听预检。
+  - 下次从桌面或程序坞冷启动时若检测到代理未生效，弹出右下角提示条一键重启开启；多账号切换与升级重启自动复用同一重启入口并保留已配置代理，互不冲突。
+- **修复与界面优化**：
+  - 修复原位编辑历史消息时切换其他会话再切回后丢失编辑态、且文本与图片落回底部普通输入框的问题：改为按会话暂存编辑中的文本与图片并先还原原底部草稿，切回后自动恢复原位编辑。
+  - 修复 Antigravity「自定义 -> 已安装 -> agy-powertools -> 概览」页面中远程 shields.io 徽章被拉宽变形的问题（#5）：打包与安装插件时自动将插件目录内 README 徽章块替换为单行纯文本信息，保留 GitHub 首页原样显示。
+  - 调整设置页字体字重层级，去掉设置行标题在 Windows 下的过粗加粗；修复侧栏 `Powertools` 入口归位与 `renderRoot` 重复挂载闪烁，并清理 `Reset` 翻译键冲突。
 
 ### v2.12.10
 - 修复点击「立即重启启用」后无反应或退出后未自动重新打开的问题：
