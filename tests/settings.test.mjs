@@ -14,6 +14,9 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(createSettingsStore(directory).get().compact, false);
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
+    assert.equal(store.get().subagentTelemetry, true);
+    store.set({ subagentTelemetry: false }); assert.equal(store.get().subagentTelemetry, false);
+    store.set({ subagentTelemetry: true }); assert.equal(store.get().subagentTelemetry, true);
     assert.equal(store.get().multiAccount, false);
     assert.equal(store.get().accountSwitcher, true);
     assert.equal(store.get().accountViewMode, 'list');
@@ -40,13 +43,18 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ sidebarProjectLimit: 3 }); assert.equal(store.get().sidebarProjectLimit, 3);
     store.set({ sidebarProjectLimit: -1 }); assert.equal(store.get().sidebarProjectLimit, -1);
     store.set({ sidebarProjectLimit: 0 });
+    assert.equal(DEFAULT_SETTINGS.overviewRange, 'weeklyQuota');
+    assert.equal(store.get().overviewRange, 'weeklyQuota');
+    store.set({ overviewRange: '24h' }); assert.equal(store.get().overviewRange, '24h');
+    store.set({ overviewRange: 'today' }); assert.equal(store.get().overviewRange, 'today');
+    store.set({ overviewRange: 'weeklyQuota' }); assert.equal(store.get().overviewRange, 'weeklyQuota');
     store.set({ enabled: false }); assert.equal(store.get().enabled, false);
     assert.equal(DEFAULT_SETTINGS.contextLimit, 0);
     store.set({language:'en',contextLimit:1000000});assert.equal(store.get().contextLimit,1000000);assert.equal(store.get().language,'en');
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { unknown: true }, { toString: false }, {language:'invalid'}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
   } finally { rmSync(directory, { recursive: true, force: true }); }

@@ -22,7 +22,8 @@ import {
   resolveLocalFilePath,
   isWindowsRunnableFile,
   openLocalFile,
-  copyLocalFile
+  copyLocalFile,
+  readLocalFileForAttach
 } from '../lib/launcher.mjs';
 import { startSidecarWebUi, renderAuxPaneHtml } from '../lib/sidecar-ui.mjs';
 
@@ -44,6 +45,9 @@ test('Linux desktop launcher override patches and restores cleanly in sandbox', 
     const created = configureLaunchers({ home, dataDir, platform: 'linux', sandbox: true, systemApplicationsDir: sysApps });
     const userFile = join(home, '.local', 'share', 'applications', 'antigravity.desktop');
     assert.equal(created.updated.length, 1);
+    assert.equal(created.macApp, undefined);
+    assert.equal(created.iconConfigured, undefined);
+    assert.equal(existsSync(join(home, 'Applications', 'Antigravity (Powertools).app')), false);
     assert.match(readFileSync(userFile, 'utf8'), /Exec=\/opt\/Antigravity\/antigravity --remote-debugging-port=0 %U/);
 
     const restored = restoreLaunchers({ home, dataDir, platform: 'linux', sandbox: true });
@@ -63,14 +67,39 @@ test('Linux desktop launcher override patches and restores cleanly in sandbox', 
   }
 });
 
-test('macOS launcher app is created in ~/Applications and removed on restore', () => {
+test('macOS launcher app copies source icon when available, clears stale icon when absent, and removes on restore', () => {
   const root = mkdtempSync(join(tmpdir(), 'agy-launcher-mac-'));
   try {
     const home = join(root, 'home'), dataDir = join(root, 'data');
     const res = configureLaunchers({ home, dataDir, platform: 'darwin', sandbox: true });
     const appDir = join(home, 'Applications', 'Antigravity (Powertools).app');
+    const plistPath = join(appDir, 'Contents', 'Info.plist');
+    const iconPath = join(appDir, 'Contents', 'Resources', 'icon.icns');
     assert.equal(res.updated[0], appDir);
+    assert.equal(res.macApp, appDir);
+    assert.equal(res.iconConfigured, false);
+    assert.equal(existsSync(iconPath), false);
+    assert.equal(readFileSync(plistPath, 'utf8').includes('CFBundleIconFile'), false);
     assert.ok(readFileSync(join(appDir, 'Contents', 'MacOS', 'launcher'), 'utf8').includes('--remote-debugging-port=0'));
+
+    const sourceApp = join(home, 'Applications', 'Antigravity.app');
+    mkdirSync(join(sourceApp, 'Contents', 'Resources'), { recursive: true });
+    writeFileSync(join(sourceApp, 'Contents', 'Info.plist'), '<plist><dict><key>CFBundleIconFile</key><string>CustomIcon</string></dict></plist>', 'utf8');
+    writeFileSync(join(sourceApp, 'Contents', 'Resources', 'CustomIcon.icns'), 'FAKE_ICNS', 'utf8');
+
+    const withIcon = configureLaunchers({ home, dataDir, platform: 'darwin', sandbox: true });
+    assert.equal(withIcon.iconConfigured, true);
+    assert.equal(withIcon.macApp, appDir);
+    assert.equal(readFileSync(iconPath, 'utf8'), 'FAKE_ICNS');
+    assert.ok(readFileSync(plistPath, 'utf8').includes('<key>CFBundleIconFile</key><string>icon.icns</string>'));
+    assert.ok(readFileSync(join(appDir, 'Contents', 'MacOS', 'launcher'), 'utf8').includes(sourceApp.replace(/(["\\$`])/g, '\\$1')));
+
+    rmSync(sourceApp, { recursive: true, force: true });
+    const withoutIcon = configureLaunchers({ home, dataDir, platform: 'darwin', sandbox: true });
+    assert.equal(withoutIcon.iconConfigured, false);
+    assert.equal(existsSync(iconPath), false);
+    assert.equal(readFileSync(plistPath, 'utf8').includes('CFBundleIconFile'), false);
+
     restoreLaunchers({ home, dataDir, platform: 'darwin', sandbox: true });
     assert.equal(existsSync(appDir), false);
   } finally {
@@ -246,18 +275,38 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
     s.once('error', reject);
     s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
   });
-  let relaunched = 0;
+  let relaunched = 0, checked = 0, installedVer = '';
   const close = await startSidecarWebUi({
     port: freePort,
     token: 'secret-token',
-    version: '2.12.5',
-    getStatus: async () => ({ healthy: false, enabled: true, language: 'zh-CN' }),
-    onRelaunch: async () => { relaunched++; return { scheduled: true }; }
+    version: '2.13.0',
+    getStatus: async () => ({
+      healthy: false,
+      compatibilityError: 'Antigravity compatibility: um (missing)',
+      clientVersion: '2.34.0',
+      connected: true,
+      enabled: true,
+      language: 'zh-CN'
+    }),
+    onRelaunch: async () => { relaunched++; return { scheduled: true }; },
+    onCheckUpdate: async () => { checked++; return { status: 'available', version: '2.13.1', canInstall: true, releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.13.1' }; },
+    onInstallUpdate: async ({ version }) => { installedVer = version; return { status: 'preparing', version }; },
+    onUpdateStatus: async () => ({ status: installedVer ? 'installing' : 'idle', version: installedVer })
   });
   try {
-    const html = renderAuxPaneHtml({ version: '2.12.5', language: 'zh-CN' });
+    const html = renderAuxPaneHtml({ version: '2.13.0', language: 'zh-CN' });
     assert.ok(html.includes('需要重启 Antigravity 以启用 Powertools 插件'));
     assert.ok(html.includes('复制启动命令'));
+    assert.ok(html.includes('检查插件更新'));
+    assert.ok(html.includes('复制诊断信息'));
+    assert.ok(html.includes('id="mac-dock-hint"'));
+    assert.ok(html.includes("data.platform === 'darwin'"));
+    assert.ok(html.includes('拖入 Dock 栏替换原 Antigravity 图标'));
+    assert.ok(html.includes('[hidden] { display: none !important; }'));
+    assert.equal(html.includes('\u00b7'), false);
+    const inlineScript = html.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(inlineScript);
+    new Function(inlineScript);
 
     const unauth = await fetch(`http://127.0.0.1:${freePort}/api/status`);
     assert.equal(unauth.status, 401);
@@ -266,7 +315,9 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
     assert.equal(statusRes.status, 200);
     const statusJson = await statusRes.json();
     assert.equal(statusJson.healthy, false);
-    assert.equal(statusJson.version, '2.12.5');
+    assert.equal(statusJson.version, '2.13.0');
+    assert.equal(statusJson.compatibilityError, 'Antigravity compatibility: um (missing)');
+    assert.equal(statusJson.clientVersion, '2.34.0');
 
     const badPost = await fetch(`http://127.0.0.1:${freePort}/api/relaunch`, { method: 'POST' });
     assert.equal(badPost.status, 401);
@@ -278,6 +329,31 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
     });
     assert.equal(okPost.status, 200);
     assert.equal(relaunched, 1);
+
+    assert.equal((await fetch(`http://127.0.0.1:${freePort}/api/update/check`, { method: 'POST' })).status, 401);
+    assert.equal((await fetch(`http://127.0.0.1:${freePort}/api/update/install`, { method: 'POST' })).status, 401);
+    assert.equal((await fetch(`http://127.0.0.1:${freePort}/api/update/status`)).status, 401);
+
+    const checkRes = await fetch(`http://127.0.0.1:${freePort}/api/update/check`, {
+      method: 'POST',
+      headers: { 'x-sidecar-token': 'secret-token', 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    assert.equal(checkRes.status, 200);
+    assert.equal((await checkRes.json()).version, '2.13.1');
+    assert.equal(checked, 1);
+
+    const installRes = await fetch(`http://127.0.0.1:${freePort}/api/update/install`, {
+      method: 'POST',
+      headers: { 'x-sidecar-token': 'secret-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: '2.13.1' })
+    });
+    assert.equal(installRes.status, 200);
+    assert.equal(installedVer, '2.13.1');
+
+    const updStatusRes = await fetch(`http://127.0.0.1:${freePort}/api/update/status?token=secret-token`);
+    assert.equal(updStatusRes.status, 200);
+    assert.equal((await updStatusRes.json()).status, 'installing');
   } finally {
     await close();
   }
@@ -467,5 +543,50 @@ test('scheduleRelaunchWithDebugPort reads saved proxy settings across platforms 
     assert.ok(!psOffBody.includes('--proxy-server='));
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('readLocalFileForAttach returns base64 media for images/PDFs, mentions for code/folders/oversized, and rejects missing or remote URIs', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-attach-'));
+  try {
+    const imgPath = join(dir, 'sample.png');
+    const imgBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    writeFileSync(imgPath, imgBytes);
+    const pdfPath = join(dir, 'spec.pdf');
+    writeFileSync(pdfPath, Buffer.from('%PDF-1.7\n'));
+    const codePath = join(dir, 'index.mjs');
+    writeFileSync(codePath, 'export const ok = true;\n');
+    const subDir = join(dir, 'folder');
+    mkdirSync(subDir);
+
+    const imgRes = readLocalFileForAttach(pathToFileURL(imgPath).href);
+    assert.equal(imgRes.mode, 'media');
+    assert.equal(imgRes.mimeType, 'image/png');
+    assert.equal(imgRes.name, 'sample.png');
+    assert.equal(imgRes.base64, imgBytes.toString('base64'));
+
+    const pdfRes = readLocalFileForAttach(pathToFileURL(pdfPath).href);
+    assert.equal(pdfRes.mode, 'media');
+    assert.equal(pdfRes.mimeType, 'application/pdf');
+
+    const oversizedRes = readLocalFileForAttach(pathToFileURL(imgPath).href, { maxMediaBytes: 4 });
+    assert.equal(oversizedRes.mode, 'mention');
+    assert.equal(oversizedRes.oversized, true);
+    assert.equal(oversizedRes.base64, undefined);
+
+    const codeRes = readLocalFileForAttach(pathToFileURL(codePath).href);
+    assert.equal(codeRes.mode, 'mention');
+    assert.equal(codeRes.kind, 'file');
+    assert.equal(codeRes.isDirectory, false);
+
+    const dirRes = readLocalFileForAttach(pathToFileURL(subDir).href);
+    assert.equal(dirRes.mode, 'mention');
+    assert.equal(dirRes.kind, 'directory');
+    assert.equal(dirRes.isDirectory, true);
+
+    assert.throws(() => readLocalFileForAttach(pathToFileURL(join(dir, 'missing.png')).href), /不存在/);
+    assert.throws(() => readLocalFileForAttach('https://example.com/a.png'), /仅支持本地文件/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

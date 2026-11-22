@@ -85,6 +85,70 @@ test('multi-pane conversations with multiple composers stay healthy without trig
   p.context.__agyPowertools.dispose();
 });
 
+test('side-question and split-pane composers fetch and render independent context and telemetry per cascadeId', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/main-conv';
+  const renderedByMount = new Map();
+  const mountOrder = [];
+  p.context.React = { createElement: (type, props, ...children) => ({ type, props, children }) };
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      mountOrder.push(mount);
+      return {
+        render(el) { renderedByMount.set(mount, el); },
+        unmount() {}
+      };
+    }
+  };
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  const makeComposerTrigger = cid => {
+    const parent = { insertBefore(child) { child.isConnected = true; } };
+    const card = { cid };
+    return { cid, isConnected: true, parentElement: parent, nextSibling: null, closest: sel => sel === '.surface-composer-card' ? card : null };
+  };
+  const mainTrigger = makeComposerTrigger('main-conv');
+  const btwTrigger = makeComposerTrigger('btw-conv');
+  p.context.__agyNativeAdapter.composerCascadeId = el => el?.cid || '';
+  const stateRequests = [];
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    if (req.method === 'settings.get') {
+      queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, { enabled: true, contextRing: true, speedStats: true }));
+      return;
+    }
+    if (req.method === 'state') {
+      stateRequests.push(req.conversationId);
+      const reply = req.conversationId === 'btw-conv'
+        ? { conversationId: 'btw-conv', contextWindow: { usedPercent: 80.4, usedTokens: 632000, maxTokens: 786432, categories: [] }, telemetry: { tps: 38, latestTps: 60.4 }, turns: [], requests: [] }
+        : { conversationId: 'main-conv', contextWindow: { usedPercent: 78.2, usedTokens: 615000, maxTokens: 786432, categories: [] }, telemetry: { tps: 38, latestTps: 51.7 }, turns: [], requests: [] };
+      queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, reply));
+      return;
+    }
+    queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, {}));
+  };
+  p.document.querySelectorAll = sel => {
+    if (sel === '[data-testid="model-selector-trigger"]') return [mainTrigger, btwTrigger];
+    if (sel === '[data-testid="agy-context-ring-trigger"]') return [{}, {}];
+    return [];
+  };
+  p.context.__agyInitialSettings = { enabled: true, contextRing: true, speedStats: true };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 40));
+  assert.ok(stateRequests.includes('main-conv'));
+  assert.ok(stateRequests.includes('btw-conv'));
+  assert.equal(mountOrder.length, 2);
+  const mainData = renderedByMount.get(mountOrder[0])?.props?.data;
+  const btwData = renderedByMount.get(mountOrder[1])?.props?.data;
+  assert.equal(mainData?.conversationId, 'main-conv');
+  assert.equal(mainData?.contextWindow?.usedPercent, 78.2);
+  assert.equal(btwData?.conversationId, 'btw-conv');
+  assert.equal(btwData?.contextWindow?.usedPercent, 80.4);
+  assert.equal(btwData?.telemetry?.latestTps, 60.4);
+  assert.equal(p.context.__agyPowertools.status.healthy, true);
+  p.context.__agyPowertools.dispose();
+});
+
 test('accountSwitcher respects multiAccount master switch, toggles native settings hide attr, and cleans up on dispose', () => {
   const pOff = page(true);
   const offMounts = [];
@@ -336,7 +400,6 @@ test('native-bindings resolves 2.34.0 notification hook without type:"add" and s
       lT: () => ({ asChild: 1, openOnHover: 1, closeDelay: 1, attr: "data-no-drag" }),
       mT: () => ({ collisionBoundary: 1, pad: 1, alignOffset: 1, keepMounted: 1 }),
       nT: () => ({ highlighted: 1, selected: 1, action: 1, description: 1, managedHighlight: 1 }),
-      Mmc: () => ({ id: 'conversation-fork-progress', runFork: 1, isForking: 1 }),
       HU: s => s.sourceTrajectoryStepInfo?.stepIndex,
       Kc: x => x,
       resolveFn: () => { const c = Kc(Proto.CascadeConfigSchema, { lookupCustomModelInfo: 1, customModelInfoOverride: 1, checkpointConfig: void 0 }); return c; },

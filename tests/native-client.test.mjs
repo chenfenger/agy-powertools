@@ -53,48 +53,37 @@ test('native fork inherits history via ForkConversation without sending a model 
   assert.equal(calls[2].forkAtStepIndex, 42);
 });
 
-test('resolveForkPlan forks turns before subagent directly and offers last pre-subagent turn boundary when subagent is in range', async () => {
-  const userStep = (index, text) => ({ metadata: { index }, step: { case: 'userInput', value: { items: [{ chunk: { case: 'text', value: text } }] } } });
-  let steps = [
-    userStep(0, '<USER_REQUEST>First user prompt</USER_REQUEST>'),
-    { metadata: { index: 1 }, step: { case: 'plannerResponse' } },
-    { metadata: { index: 2 }, step: { case: 'systemMessage' } },
-    userStep(3, '<USER_REQUEST>Check this link</USER_REQUEST>'),
-    userStep(4, 'Error: The stream was interrupted. Please continue the task you were working on.'),
-    { metadata: { index: 5 }, step: { case: 'plannerResponse' } },
-    { metadata: { index: 6 }, step: { case: 'generic' }, metadata: { index: 6, toolCall: { name: 'invoke_subagent' } } },
-    { metadata: { index: 7 }, step: { case: 'plannerResponse' } },
-    userStep(8, '<USER_REQUEST>Follow-up question</USER_REQUEST>'),
-    { metadata: { index: 9 }, step: { case: 'plannerResponse' } }
-  ];
-  const service = { async getCascadeTrajectory() { return { trajectory: { steps } }; }, async forkConversation() { return { newCascadeId: 'forked' }; } };
+test('fork automatically promotes via Side Question and cleans up temp trajectory when direct fork rejects subagents', async () => {
+  const events = [];
+  const service = {
+    async getCascadeTrajectory() { return { trajectory: { steps: [{ metadata: { index: 10 }, step: { case: 'plannerResponse' } }, { metadata: { index: 11 }, step: { case: 'userInput' } }] } }; },
+    async startCascade(req) { events.push({ op: 'startCascade', trajectoryType: req.trajectoryType, parent: req.baseTrajectoryIdentifier?.identifier?.value, cascadeId: req.cascadeId }); },
+    async forkConversation(req) {
+      events.push({ op: 'forkConversation', sourceCascadeId: req.sourceCascadeId, forkAtStepIndex: req.forkAtStepIndex });
+      if (req.sourceCascadeId === 'sub-chat') throw new Error('failed to create forked conversation: forking is not supported for conversations that have invoked subagents');
+      return { newCascadeId: 'promoted-id', newProjectId: 'proj-1', forkedAtStepIndex: req.forkAtStepIndex, warnings: [] };
+    },
+    async deleteCascadeTrajectory(id) { events.push({ op: 'delete', id }); }
+  };
   const element = { '__reactFiber$fixture': { tag: 5, return: { tag: 10, type: {}, memoizedProps: { value: service }, return: null } } };
-  const context = vm.createContext({ document: { querySelector: () => element }, HU: metadata => metadata.index });
+  const context = vm.createContext({ document: { querySelector: () => element }, HU: m => m.index, crypto: { randomUUID: () => 'sq-temp-1' } });
   vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
-  const adapter = context.__agyNativeAdapter;
 
-  const beforeSub = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', 1)));
-  assert.deepEqual(beforeSub, { mode: 'direct', forkAtStepIndex: 2 });
+  const resEnd = await context.__agyNativeAdapter.fork('sub-chat', -1);
+  assert.equal(resEnd.conversationId, 'promoted-id');
+  assert.equal(resEnd.promotedViaSideQuestion, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    { op: 'forkConversation', sourceCascadeId: 'sub-chat', forkAtStepIndex: -1 },
+    { op: 'startCascade', trajectoryType: 22, parent: 'sub-chat', cascadeId: 'sq-temp-1' },
+    { op: 'forkConversation', sourceCascadeId: 'sq-temp-1', forkAtStepIndex: -1 },
+    { op: 'delete', id: 'sq-temp-1' }
+  ]);
 
-  const fullFork = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', -1)));
-  assert.deepEqual(fullFork, {
-    mode: 'before-subagent',
-    forkAtStepIndex: 2,
-    turnNumber: 1,
-    subagentTurnNumber: 2,
-    promptPreview: 'First user prompt'
-  });
-
-  const afterSub = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', 7)));
-  assert.equal(afterSub.mode, 'before-subagent');
-  assert.equal(afterSub.forkAtStepIndex, 2);
-
-  steps = [
-    userStep(0, 'Immediate browser task'),
-    { metadata: { index: 1, toolCall: { name: 'invoke_subagent' } }, step: { case: 'generic' } }
-  ];
-  const firstTurnSub = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', -1)));
-  assert.deepEqual(firstTurnSub, { mode: 'blocked-first-turn', subagentStepIndex: 1 });
+  events.length = 0;
+  const resHist = await context.__agyNativeAdapter.fork('sub-chat', 10, { exact: true });
+  assert.equal(resHist.conversationId, 'promoted-id');
+  assert.equal(events[2].forkAtStepIndex, 10);
+  assert.deepEqual(JSON.parse(JSON.stringify(events[3])), { op: 'delete', id: 'sq-temp-1' });
 });
 
 test('forked conversations automatically receive an incremented (N) title annotation', async () => {
@@ -500,4 +489,170 @@ test('setSidebarProjectLimit controls per-project visible rows, supports show-al
   adapter.setSidebarProjectLimit(3);
   adapter.dispose();
   assert.equal(context.VWc,nativeFlat);
+});
+
+test('composerCascadeId resolves nearest conversationId or effectiveCascadeId for side-question and split-pane composers',()=>{
+  const context=vm.createContext({document:{querySelector:()=>null}});
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  const adapter=context.__agyNativeAdapter;
+  const sideQuestionEl={
+    '__reactFiber$sq':{
+      memoizedProps:{},
+      return:{
+        memoizedProps:{conversationId:'sq-123',parentCascadeId:'main-1',isSideQuestion:true},
+        return:{memoizedProps:{cascadeId:'main-1'},return:null}
+      }
+    }
+  };
+  const effectiveEl={
+    '__reactFiber$eff':{
+      memoizedProps:{effectiveCascadeId:'sq-456',parentCascadeId:'main-1'},
+      return:{memoizedProps:{cascadeId:'main-1'},return:null}
+    }
+  };
+  assert.equal(adapter.composerCascadeId(sideQuestionEl),'sq-123');
+  assert.equal(adapter.composerCascadeId(effectiveEl),'sq-456');
+});
+
+test('fileTreeEntry extracts file and folder URIs and attachFileToComposer routes media via attachFiles and files/dirs via native mention helpers', async () => {
+  const attached = [];
+  const fileMentions = [];
+  const scopeMentions = [];
+  let focused = 0;
+  const editor = { focus() { focused++; } };
+  const box = {
+    lexicalRef: { current: editor },
+    async attachFiles(files) { attached.push(...files); },
+    getInputCardElement: () => ({ scrollIntoView() {} })
+  };
+  const inputBoxEl = {
+    '__reactFiber$ib': {
+      tag: 10,
+      memoizedProps: { value: { inputBoxRef: { current: box }, getLexicalEditor: () => editor } },
+      return: null
+    }
+  };
+  const treeRowEl = {
+    '__reactFiber$row': {
+      memoizedProps: {},
+      return: {
+        memoizedProps: { entry: { uri: 'file:///workspace/assets/logo.png', fileType: 1 } },
+        return: null
+      }
+    }
+  };
+  const dirRowEl = {
+    '__reactFiber$dir': {
+      memoizedProps: { entry: { uri: 'file:///workspace/docs', fileType: 2 } },
+      return: null
+    }
+  };
+  const context = vm.createContext({
+    atob,
+    Uint8Array,
+    File,
+    document: {
+      activeElement: null,
+      querySelector: sel => sel.includes('agent-input-box') ? inputBoxEl : null
+    },
+    MUa: (ed, uri) => fileMentions.push({ ed, uri }),
+    Shd: (kind, uri) => ({ kind, uri }),
+    Gy: (ed, item) => scopeMentions.push({ ed, item })
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  const childInFileRow = { closest: sel => sel === '[role="treeitem"]' ? treeRowEl : null };
+  const childInDirRow = { closest: sel => sel === '[role="treeitem"]' ? dirRowEl : null };
+  assert.deepEqual({ ...adapter.fileTreeEntry(childInFileRow) }, { uri: 'file:///workspace/assets/logo.png', isDirectory: false });
+  assert.deepEqual({ ...adapter.fileTreeEntry(childInDirRow) }, { uri: 'file:///workspace/docs', isDirectory: true });
+
+  const mediaRes = await adapter.attachFileToComposer({
+    mode: 'media',
+    name: 'logo.png',
+    mimeType: 'image/png',
+    base64: Buffer.from('PNGDATA').toString('base64')
+  });
+  assert.equal(mediaRes.mode, 'media');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].name, 'logo.png');
+  assert.equal(attached[0].type, 'image/png');
+  assert.equal(attached[0].size, 7);
+
+  const fileRes = await adapter.attachFileToComposer({
+    mode: 'mention',
+    kind: 'file',
+    uri: 'file:///workspace/src/app.js',
+    name: 'app.js'
+  });
+  assert.equal(fileRes.mode, 'mention');
+  assert.deepEqual(fileMentions, [{ ed: editor, uri: 'file:///workspace/src/app.js' }]);
+
+  const dirRes = await adapter.attachFileToComposer({
+    mode: 'mention',
+    kind: 'directory',
+    isDirectory: true,
+    uri: 'file:///workspace/docs',
+    name: 'docs'
+  });
+  assert.equal(dirRes.kind, 'directory');
+  assert.deepEqual(scopeMentions, [{ ed: editor, item: { kind: 'directory', uri: 'file:///workspace/docs' } }]);
+  assert.equal(focused, 3);
+});
+
+test('stable sendUserCascadeMessage wrapper preserves edit revert even when composer destructured send while config overrides were off', async () => {
+  const events = [];
+  const editor = { getEditorState: () => ({ toJSON: () => ({ root: {} }) }), setEditorState() {}, focus() {} };
+  const box = { lexicalRef: { current: editor }, getMediaAttachments: () => [], setMediaAttachments() {}, floatingContentRef: { current: {} } };
+  const inputBox = { parentNode: null, nextSibling: null };
+  const bottomDock = { isConnected: true, children: [inputBox], insertBefore() {} };
+  inputBox.parentNode = bottomDock; inputBox.parentElement = bottomDock;
+  const service = {
+    forkConversation() {},
+    async cancelCascadeInvocation() {},
+    async sendUserCascadeMessage(payload) { events.push(['send', payload.cascadeId]); return payload; }
+  };
+  const stepHandler = {
+    async revertToIndex(id, idx, opts) { events.push(['revert', id, idx, opts]); }
+  };
+  const message = { cascadeId: 'conv-stable', metadata: { index: 4 }, step: { items: [{ chunk: { case: 'text', value: 'old' } }], media: [], artifactComments: [], fileDiffComments: [], fileComments: [] } };
+  const element = {
+    isConnected: true, attrs: new Set(), children: [],
+    setAttribute() {}, removeAttribute() {}, prepend() {},
+    closest: () => ({ querySelector: () => inputBox }),
+    '__reactFiber$fixture': {
+      tag: 0, memoizedProps: message,
+      return: {
+        tag: 10, type: {}, memoizedProps: { value: { stepHandler } },
+        return: {
+          tag: 10, type: {}, memoizedProps: { value: { inputBoxRef: { current: box }, getLexicalEditor: () => editor } },
+          return: { tag: 10, type: {}, memoizedProps: { value: service }, return: null }
+        }
+      }
+    }
+  };
+  const makeNode = () => ({ dataset: {}, className: '', textContent: '', append() {}, addEventListener() {}, remove() {} });
+  const context = vm.createContext({
+    document: { querySelector: () => element, createElement: makeNode },
+    HU: m => m.index,
+    LN: items => JSON.stringify({ root: { items } }),
+    IJ: (_, json) => JSON.parse(json),
+    I: { CascadeConfigSchema: {} }, tc: (_, v) => structuredClone(v), Wb: (_, v) => v
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+  // All config overrides OFF when conversation mounts and destructures sendUserCascadeMessage (just like native useMemo)
+  adapter.setStageUpdates(false);
+  adapter.setEfficientIO(false);
+  adapter.setContextLimit(0);
+  adapter.ensureRequestHook();
+  const capturedSend = service.sendUserCascadeMessage;
+
+  // Later user clicks Edit -> composer calls the previously captured send closure
+  await adapter.beginEdit(element);
+  await capturedSend({ cascadeId: 'conv-stable', items: [{ chunk: { case: 'text', value: 'edited' } }], media: [] });
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['revert', 'conv-stable', 3, { conversationOnly: true }],
+    ['send', 'conv-stable']
+  ]);
 });

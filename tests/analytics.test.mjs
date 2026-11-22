@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseChecklist } from '../lib/progress.mjs';
-import { createPricingStore, estimateCost, parseOfficialPricing } from '../lib/pricing.mjs';
+import { createPricingStore, estimateCost, parseOfficialPricing, parsePartnerPricing } from '../lib/pricing.mjs';
 import { createQuotaTracker } from '../lib/quota.mjs';
 import { requestEvents } from '../lib/analytics.mjs';
 test('buffered provider responses use whole-request timing instead of a millisecond streaming tail',()=>{
@@ -72,19 +72,45 @@ test('Orchestrator planner and execution requests price by underlying model and 
   assert.equal(estimateCost({model:'Gemini 4 Hydrogen (High)',role:'execution',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),9.075);
   assert.equal(estimateCost({model:'Orchestrator (Carbon)',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),12.1);
   assert.equal(estimateCost({model:'Orchestrator (Argon)',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),12.1);
+  assert.equal(estimateCost({model:'Orchestrator Gemini 4 Neon Extra High',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),18.15);
+  assert.equal(estimateCost({model:'Orchestrator (Claude Opus 5.5)',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),24.2);
+  assert.equal(estimateCost({model:'Claude Opus 5.5 (Orchestrator)',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),24.2);
+  assert.equal(estimateCost({model:'Claude Sonnet 5.5 (Orchestrator)',role:'execution',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),12.1);
 
   const tracker=createQuotaTracker(dir);
   const resetTimeMs=ts+4*3600*1000;
   const reqs=[
    {model:'Orchestrator (Neon)',role:'planner',timestampMs:ts-2000,durationMs:500,inputTokens:100000,cacheReadTokens:0,outputTokens:0},
    {model:'Gemini 4 Hydrogen (High)',role:'execution',timestampMs:ts-1500,durationMs:500,inputTokens:200000,cacheReadTokens:0,outputTokens:0},
-   {model:'Orchestrator (Neon)',role:'planner',timestampMs:ts-1000,durationMs:500,inputTokens:100000,cacheReadTokens:0,outputTokens:0}
+   {model:'Orchestrator (Neon)',role:'planner',timestampMs:ts-1000,durationMs:500,inputTokens:100000,cacheReadTokens:0,outputTokens:0},
+   {model:'Orchestrator (Claude Opus 5.5)',role:'planner',timestampMs:ts-900,durationMs:500,inputTokens:100000,cacheReadTokens:0,outputTokens:0},
+   {model:'Claude Opus 5.5 (Orchestrator)',role:'planner',timestampMs:ts-800,durationMs:500,inputTokens:100000,cacheReadTokens:0,outputTokens:0},
+   {model:'Claude Sonnet 5.5 (Orchestrator)',role:'execution',timestampMs:ts-700,durationMs:500,inputTokens:200000,cacheReadTokens:0,outputTokens:0}
   ];
-  // 0.3 + 0.3 + 0.3 = $0.90 across 3% consumption => $30 extrapolated Gemini quota; Claude bucket stays unknown
+  // Gemini: 0.3 + 0.3 + 0.3 = $0.90 across 3% => $30; Claude: 0.4 + 0.4 + 0.4 = $1.20 across 3% => $40
   const res=tracker.observe([
    {buckets:[{bucketId:'gemini-5h',window:'5h',remainingFraction:.97,resetTimeMs},{bucketId:'claude-5h',window:'5h',remainingFraction:.97,resetTimeMs}]}
   ],reqs,rates,ts).estimates;
   assert.ok(Math.abs(res[0].estimateUsd-30)<1e-9);
-  assert.equal(res[1].estimateUsd,null);
+  assert.ok(Math.abs(res[1].estimateUsd-40)<1e-9);
  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('parsePartnerPricing dynamically parses current and future Claude models without bleeding sections',()=>{
+  const html=`
+    <nav><a href="#opus">Opus 5.5</a><a href="#future">Claude Opus 6</a></nav>
+    <h3 id="opus">Opus 5.5</h3>
+    <table><tr><td>Input $4.00</td><td>Output $20.00</td><td>Cache Hit $0.20</td><td>5m Cache Write $5.00</td></tr></table>
+    <h3>Claude Haiku 5.5</h3>
+    <table><tr><td>Input $0.10</td><td>Output $0.50</td><td>Cache Hit $0.01</td><td>5m Cache Write $0.125</td></tr></table>
+    <h3>Claude Opus 4.7</h3>
+    <table><tr><td>Input $5.00</td><td>Output $25.00</td><td>5m Cache Write $6.25</td></tr></table>
+    <h3 id="future">Claude Opus 6</h3>
+    <table><tr><td>Input $6.00</td><td>Output $30.00</td><td>Cache Read $0.30</td></tr></table>
+  `;
+  const rates=parsePartnerPricing(html,'2026-11-21');
+  assert.deepEqual(rates.map(r=>r.model),['claude-opus-5-5','claude-haiku-5-5','claude-opus-6']);
+  assert.equal(rates[0].input,4);assert.equal(rates[0].output,20);assert.equal(rates[0].cache,0.2);assert.equal(rates[0].cacheWrite,5);
+  assert.equal(rates[1].cacheWrite,0.125);
+  assert.equal(rates[2].input,6);assert.equal(rates[2].cache,0.3);assert.equal(rates[2].cacheWrite,undefined);
 });

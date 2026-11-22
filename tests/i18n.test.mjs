@@ -1,4 +1,8 @@
-import test from 'node:test';import assert from 'node:assert/strict';import{readFileSync}from'node:fs';import vm from'node:vm';
+import test from 'node:test';import assert from 'node:assert/strict';import{readFileSync,mkdtempSync,rmSync}from'node:fs';import{tmpdir}from'node:os';import{join}from'node:path';import vm from'node:vm';
+import{toZhTw}from'../lib/zh-tw.mjs';
+import{renderAuxPaneHtml}from'../lib/sidecar-ui.mjs';
+import{formatRelativeTime,formatResetCountdown}from'../lib/account-helpers.mjs';
+import{createSettingsStore}from'../lib/settings.mjs';
 test('native settings translations preserve product names and English input terminology',()=>{
  const document={nodeType:9,createTreeWalker:()=>({nextNode:()=>null}),querySelectorAll:()=>[]};
  const context=vm.createContext({document,NodeFilter:{SHOW_TEXT:4},MutationObserver:class{observe(){} disconnect(){}}});
@@ -21,4 +25,88 @@ test('native settings translations preserve product names and English input term
  assert.equal(t('Resets in 5d 1h','zh-CN'),'5 天 1 小时后重置');assert.equal(t('Resets in 3h 33m','zh-CN'),'3 小时 33 分钟后重置');
  assert.equal(t('Pull Requests','zh-CN'),'Pull Requests');assert.equal(t('14m ago','zh-CN'),'14m ago');
  assert.equal(t('Turbo','zh-CN'),'Turbo');assert.equal(t('当前会话','en'),'Current conversation');
+});
+
+test('Traditional Chinese (zh-TW) uses Taiwan IT terminology, converts UI strings cleanly, and persists in settings',()=>{
+  const document={nodeType:9,createTreeWalker:()=>({nextNode:()=>null}),querySelectorAll:()=>[]};
+  const context=vm.createContext({document,NodeFilter:{SHOW_TEXT:4},MutationObserver:class{observe(){} disconnect(){}},__agyToZhTw:toZhTw});
+  vm.runInContext(readFileSync('lib/native-i18n.js','utf8'),context);
+  const t=context.__agyI18n.t;
+  assert.equal(t('Settings','zh-TW'),'設定');
+  assert.equal(t('Context window','zh-TW'),'上下文視窗');
+  assert.equal(t('Cache hit','zh-TW'),'快取命中');
+  assert.equal(t('Open File','zh-TW'),'開啟檔案');
+  assert.equal(t('Restore defaults','zh-TW'),'恢復預設設定');
+  assert.equal(t('Every command requires approval.','zh-TW'),'每條命令均需批准。');
+  assert.equal(t('Background Tasks','zh-TW'),'背景任務');
+  assert.equal(t('Your Plan: Google AI Ultra','zh-TW'),'目前方案：Google AI Ultra');
+  assert.equal(t('Resets in 3h 33m','zh-TW'),'3 小時 33 分鐘後重置');
+  assert.equal(t('Thinking effort','zh-CN'),'思考深度');
+  assert.equal(t('Thinking effort','zh-TW'),'思考深度');
+  assert.equal(t('View Usage','zh-CN'),'查看用量');
+  assert.equal(t('Promote to Conversation','zh-CN'),'提升为正式会话');
+  assert.equal(t('Promote to Conversation','zh-TW'),'提升為正式會話');
+  assert.equal(t('Carries out the plan: searches, edits, builds, and tests. Pick a faster, cheaper model.','zh-TW'),'負責執行計畫，包括檢索、編輯、構建與測試，建議選擇更快、更省的模型。');
+  assert.equal(t('Delete Conversation','zh-CN'),'删除会话');
+  assert.equal(t('Delete Conversation','zh-TW'),'刪除會話');
+  assert.equal(t('Are you sure you want to delete this conversation? This action cannot be undone.','zh-TW'),'確定要刪除此會話嗎？此操作無法撤銷。');
+  assert.equal(t('Minimize','zh-TW'),'最小化');
+  assert.equal(t('Maximize','zh-TW'),'最大化');
+  assert.equal(t('Create Project','zh-TW'),'建立專案');
+  assert.equal(t('Command Palette','zh-TW'),'命令面板');
+  assert.equal(t('This computer','zh-TW'),'本機');
+  assert.equal(t('Input Box','zh-TW'),'輸入框');
+  assert.equal(t('Queued messages','zh-TW'),'後續訊息');
+  assert.equal(t('Choose which key sends a message in the chat composer.','zh-TW'),'選擇在聊天輸入框中傳送訊息的按鍵。');
+  assert.equal(t('Controls how much time and quota the model spends reasoning before responding. Higher effort improves accuracy on hard problems, at the cost of slower responses and higher quota use.','zh-CN'),'控制模型在回复前投入多少时间与额度进行推理。更高的思考深度可提升复杂问题的准确度，但会增加响应耗时与额度消耗。');
+  assert.equal(toZhTw('复制文件并恢复默认设置，助手回复缓存异常'), '複製檔案並恢復預設設定，助手回覆快取異常');
+  assert.equal(toZhTw('按实际规划 / 执行模型计价'), '按實際規劃 / 執行模型計價');
+  assert.equal(formatRelativeTime(0, 30000, 'zh-TW'), '剛剛');
+  assert.equal(formatRelativeTime(0, 120000, 'zh-TW'), '2 分鐘前');
+  assert.equal(formatResetCountdown(7200000, 0, 'zh-TW'), '2 小時後重置');
+  const html=renderAuxPaneHtml({version:'2.13.1',language:'zh-TW'});
+  assert.match(html,/<html lang="zh-TW">/);
+  assert.ok(html.includes('需要重啟 Antigravity 以啟用 Powertools 外掛'));
+  assert.ok(html.includes('檢查外掛更新'));
+  // Ensure settings store accepts zh-TW
+  const dir=mkdtempSync(join(tmpdir(),'agy-lang-tw-'));
+  try{
+    const store=createSettingsStore(dir);
+    assert.equal(store.set({language:'zh-TW'}).language,'zh-TW');
+    assert.equal(store.get().language,'zh-TW');
+  }finally{rmSync(dir,{recursive:true,force:true});}
+  // Ensure no common simplified-only glyphs remain across UI source files after toZhTw
+  const simplifiedOnly=/[万与个为义于产仅从仓们价优会传体余侧关内写准减凑凭击划则刚创删务动区协单占却历压参发变号后听启周响唤围图圆场声处备头夹实审对导将尝尽层带帮并广库应开异强归当录径忆态总战执扩扬抢护报担拦择挂换据数断无旧时昵显暂机权条来栏树样档检汇没洁浅测浏滚满点热状独环现电监盘码确碍离积称稳筛签简类紧级线组细织终结给络绝统继续缓编缩网联脑范营补装观规视览触计订认让议记许设访证识诊试话询该详语误说请读调败账费资转轮软载较辅辑输边过运这进远违连迟适选遥邮采钟钥钮链销错键长闭问闲间阅队阶际险随隐静页顶项顺顿预频题额风馈驻验骤麦标]/;
+  for(const file of ['lib/native-i18n.js','lib/native-panels.js','lib/native-ui.js','lib/sidecar-ui.mjs']){
+    const converted=toZhTw(readFileSync(file,'utf8')).replace(/简体中文|批准/g,'');
+    const leftover=converted.match(simplifiedOnly);
+    assert.equal(leftover,null,`Unexpected simplified glyph ${leftover?.[0]} in ${file}`);
+  }
+});
+
+test('Swarm UI strings translate cleanly in zh-CN and zh-TW without middle dots and protect post bodies', () => {
+  const document = { nodeType: 9, createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [] };
+  const context = vm.createContext({ document, NodeFilter: { SHOW_TEXT: 4 }, MutationObserver: class { observe() {} disconnect() {} }, __agyToZhTw: toZhTw });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  const t = context.__agyI18n.t;
+  assert.equal(t('Board', 'zh-CN'), '讨论板');
+  assert.equal(t('Board', 'zh-TW'), '討論板');
+  assert.equal(t('Members', 'zh-CN'), '成员');
+  assert.equal(t('Members', 'zh-TW'), '成員');
+  assert.equal(t('Graph', 'zh-CN'), '关系图');
+  assert.equal(t('Graph', 'zh-TW'), '關係圖');
+  assert.equal(t('From anyone', 'zh-CN'), '来自任意成员');
+  assert.equal(t('To anyone', 'zh-TW'), '提及任意成員');
+  assert.equal(t('Hide inactive', 'zh-CN'), '隐藏非活跃');
+  assert.equal(t('Export GIF', 'zh-TW'), '匯出 GIF'.replace('匯', '導'));
+  assert.equal(t('No swarm in this conversation', 'zh-CN'), '当前会话暂无蜂群');
+  assert.equal(t('Copy to clipboard', 'zh-TW'), '複製到剪貼簿');
+  assert.equal(t('Attach to chat', 'zh-CN'), '引用到输入框');
+  assert.equal(t('Attach to chat', 'zh-TW'), '引用到輸入框');
+  const ovLabel = t(`overview \u00b7 from the narrator\u2019s notes`, 'zh-CN');
+  assert.equal(ovLabel, '概览 - 来自旁白笔记');
+  assert.equal(ovLabel.includes('\u00b7'), false);
+  assert.equal(t(`overview \u00b7 from the narrator's notes`, 'zh-TW'), '概覽 - 來自旁白筆記');
+  const i18nSrc = readFileSync('lib/native-i18n.js', 'utf8');
+  assert.ok(i18nSrc.includes('.post-body') && i18nSrc.includes('#ov-frame'));
 });

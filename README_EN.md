@@ -46,10 +46,10 @@ It addresses four common friction points in daily Antigravity usage:
 ## Features
 
 - **Codex-like conversation flow**: Same-font compact layout, plus live stage updates while tools run that automatically fold into the top duration bar once the turn completes.
-- **Context ring and dynamic speed gauge**: Separate composer controls for context usage (including cache reuse, compaction count, and Orchestrator per-model context bars) and live generation speed (`tok/s`, TTFT, and model vs. tool timing).
+- **Context ring and dynamic speed gauge**: Separate composer controls for context usage (including cache reuse, compaction count, and Orchestrator per-model context bars) and live generation speed (`tok/s`, TTFT, and model vs. tool timing), including zero-footprint remote session, subagent, and dashboard telemetry in OpenSSH remote windows (`SSH: ...`).
 - **Lossless session branching and message editing**: Fork a new chat from any historical reply with full prior steps and tool records preserved, or open the native composer in place to edit a sent message and regenerate.
 - **Task progress, persistent outline, and taskbar unread reminders**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel, keep the left turn outline visible, and surface unread counts with native taskbar highlighting when background turns finish.
-- **Bilingual UI (`English` / `简体中文`)**: Switch between English and Simplified Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
+- **Multilingual UI (`English` / `简体中文` / `繁體中文`)**: Switch between English, Simplified Chinese, and Traditional Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
 - **Local usage, error, and quota dashboard**: A dedicated `Powertools` sidebar page with a 53-week usage heatmap, model health timeline, token and cost donuts, request filters, one-click error copy, quota bars, and official API reference pricing.
 - **Multi-account switching and quota management (opt-in)**: Isolate and switch multiple Google accounts locally via the OS keyring without storing plaintext tokens; integrates a bottom-left sidebar switcher with the native Settings entry, 5H/weekly quota views, list/card layouts, drag reordering, credential verification, and optional auto-switch on depletion.
 - **No-TUN application proxy (opt-in)**: Configure an Antigravity-only proxy via protocol/host/port fields without modifying `app.asar` or creating proxy shortcuts; injects proxy args and environment variables on relaunch with built-in HTTP CONNECT / SOCKS5 connectivity testing, optional `GODEBUG=http2client=0` to mitigate `EOF` drops, and a cold-start relaunch prompt.
@@ -138,6 +138,7 @@ Two independent controls sit in the composer (each can be toggled separately in 
 
 - **Context breakdown and Orchestrator view**: Displays actual input token usage and compaction count from the latest generation, split across Messages, System prompt, System tools, Skills, and Free space, plus cached vs. new input tokens for the step. In Orchestrator mode, separate context bars are shown for the planning and execution models.
 - **Dynamic speed gauge and session telemetry**: Deflects the gauge needle and color by generation rate; clicking opens turn and step counts, total tokens, average / peak / latest speed (`tok/s`), cache hit rate, estimated 5-minute cache observation window, time to first token, and model vs. tool time.
+- **Remote SSH window telemetry**: In desktop `SSH: ...` remote windows, reuses your local OpenSSH configuration to run an on-demand, zero-disk-footprint read-only worker in memory on the remote host (using Antigravity's remote `agy-node` or system Node.js `>= 22.13`), bringing the context ring, speed gauge, Overview task progress, subagent stats, and usage dashboard to remote sessions without installing plugins or persistent daemons on the server.
 
 ### 3. Lossless session branching and inline message editing
 
@@ -148,7 +149,7 @@ Two independent controls sit in the composer (each can be toggled separately in 
 
 Click **Powertools** in the left sidebar to open five local analytics tabs:
 
-- **Overview**: Filter by Last 24 hours, Yesterday, This week, This month, Last 30 days, All time, or a custom date range. Includes request success/error counts, input/output tokens, API reference cost, a 53-week usage heatmap, a model health timeline, paired token and cost donut charts, and per-model speed tables.
+- **Overview**: Defaults to **Current weekly quota** (aligned to native weekly quota reset timestamps), and also filters by Today, Last 24 hours, Yesterday, This week, This month, Last 30 days, All time, or a custom date range. Includes request success/error counts, input/output tokens, API reference cost, a 53-week usage heatmap, a model health timeline, paired token and cost donut charts, and per-model speed tables.
 - **Requests**: Search and filter individual generations by model, conversation scope, and result, with per-request speed, latency, input, cache reads, cache hit rate, output, and estimated cost.
 - **Errors**: Inspect failed requests by timestamp, model, and error summary, with one-click copy for the full error message.
 - **Quota**: Reads native account quota endpoints to display your current plan badge (Pro / Ultra, etc.) and remaining 5-hour and weekly percentages, reset times, and sampled budget estimates for Gemini and Claude / GPT buckets.
@@ -252,9 +253,11 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 | Setting | Default | Description |
 | --- | --- | --- |
+| Default Overview range | `Current weekly quota` | Default time range shown on the Powertools Overview tab (`Current weekly quota`, `Today`, `Last 24 hours`, `Yesterday`, `This week`, `This month`, `Last 30 days`, or `All time`) |
 | Context ring | On | Shows the context usage ring and breakdown popover in the composer (including step cache reuse and Orchestrator per-model context; ring-only at 0 usage) |
 | Speed & statistics | On | Shows a circular dynamic speed dial with latest throughput in the composer and opens session telemetry |
-| Task progress | On | Renders checklist progress, recent tool activity, and elapsed timer inside Overview |
+| Task progress | On | Renders checklist progress, live execution phase (approval wait, retry reason, running tool, thinking, streaming), recent tool activity, and elapsed timer inside Overview |
+| Subagent context & telemetry | On | Displays per-subagent model, context usage, tokens, cache hit rate, speed, and estimated cost in Overview subagent rows, subagent composer bars, and main composer popovers |
 | Turn duration | On | Displays completion duration at the top of each finished turn |
 | Expand tools from duration | On | Click the turn duration label to expand or collapse tool calls and stage updates |
 
@@ -291,6 +294,49 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.13.4
+- **Added "Current weekly quota" range in Overview as the new default (#12, thanks `@zhangyu-ch`)**: Resolves per-pool weekly reset windows for the active account and adds a configurable default Overview range under `Settings -> Telemetry & progress`.
+- **Added remote session telemetry for OpenSSH windows (#14, thanks `@reshdh`)**: Streams remote session, subagent, and dashboard metrics over local OpenSSH without leaving files on the remote host, isolates SSH component discovery cache, and reports per-window health.
+- **Per-account quota isolation and request filtering (#9, #11)**:
+  - Tracks an active-account switch timeline (`account-timeline.json`, with automatic backfill from existing `quota-samples.json` and `accounts.json`) so quota budget estimates only count requests from the current account's time windows instead of mixing prior accounts.
+  - Adds an account filter dropdown to `Overview`, `Requests`, and `Errors` when multiple accounts exist, shows compact account labels under timestamps in the `All accounts` view, and stays hidden for single-account setups.
+- **Attach images and files to chat from context menu**: Adds `Attach to chat` to the file context menu and extends right-click support to the right-side `Files` tree; attaches images, PDFs, Office documents, audio/video, and zip archives (up to 10 MB) via Antigravity's native media upload pipeline, and inserts native `@file` / `@directory` mention chips for code, text, folders, and SSH remote paths.
+- **Swarm panel localization (#10)**: Attaches a lightweight localizer to `plugin://swarm--swarm_board-*` iframes with live language syncing (Simplified Chinese, Traditional Chinese, and English) while excluding board post bodies, narrator frames, and raw JSON blocks.
+- **Fixes**:
+  - Fixed Side Question (`/btw`) and split-pane composers not updating their own context ring and speed stats by resolving and polling state per composer `cascadeId`.
+  - Fixed in-place message editing skipping `revertToIndex` when `Stage updates`, `Parallel search & read`, and `Context target` overrides were all turned off, caused by Antigravity's composer `useMemo` caching the unwrapped `sendUserCascadeMessage` function.
+  - Fixed false post-update restart prompts caused by transient `/json/list` polling timeouts (#15, thanks `@reshdh`).
+
+### v2.13.3
+- **Full-history branching for conversations with subagents and streamlined fork path**:
+  - Calls native `ForkConversation` first; when Antigravity 2.34.0 rejects direct forking because subagents were invoked, automatically promotes through the native `SIDE_QUESTION` trajectory path (supports both end-of-chat and historical turns after subagents without sending a model prompt, leaves source subagents behind, and deletes the temporary side-question trajectory in `finally`).
+  - Removed legacy `resolveForkPlan` trajectory pre-scanning, the pre-subagent fallback dialog, and the unused `Mmc` native hook binding; navigates into forked sessions via the native SPA router.
+- **macOS launcher icon and Dock replacement guide (#7, #8, thanks `@PIGzyj233`)**:
+  - Automatically resolves the source `Antigravity.app` and copies its `.icns` icon into `~/Applications/Antigravity (Powertools).app` with `CFBundleIconFile` and `lsregister` refresh on macOS, without modifying the official app bundle or system Dock plist.
+  - Added macOS-only Dock replacement guidance to installer output, missing-port prompts, and the official Aux Pane.
+- **Completed 2.34.0 UI and menu localizations**: Added translations (both Simplified and Traditional Chinese) for `Thinking effort` and its tooltip, `View Usage`, `/btw` promotion controls, Orchestrator settings, the Delete Conversation confirmation modal, top `Workspace` / `Window` menus, and the General settings composer key description.
+
+### v2.13.2
+- **Overview and Requests page improvements (#6)**:
+  - Overview `Total tokens` card now shows the input/output split and overall cache hit rate (with cached token volume), the `Cost` card shows average cost per priced request, and `Model statistics` adds a color-coded `Cache hit` column with hover breakdown.
+  - Requests table detects short-interval cache anomalies (cleared, steep drop, or repeated miss within 3 minutes per conversation and normalized model, excluding cold starts, model switches, context compaction, and large-file dilution), highlights anomaly rows in red with status tags and hover comparison tooltips, adds a `Cache anomaly` filter option under `Result`, highlights single requests costing >= $1, and tightens table row density.
+- **Traditional Chinese (`zh-TW`) support**: Added `繁體中文` alongside `简体中文` and `English` under `Settings -> Language`, covering Powertools panels, native Antigravity UI localization, composer popovers, and the official Aux Pane.
+- **Antigravity 2.34.0 Orchestrator compatibility and dynamic Claude pricing**:
+  - Updated model normalization, cost estimation, and quota bucket attribution for Orchestrator sessions using Claude Opus 5.5 or custom execution models.
+  - Replaced hardcoded Claude model names in `pricing.refresh` with dynamic parsing of all Claude Opus / Sonnet / Haiku entries from the Google Cloud partner pricing page.
+- **UI fixes and cleanup**:
+  - Fixed duplicate checkmarks appearing on both left and right sides of Powertools select menus.
+  - Removed non-live refresh controls on the Accounts & Quota page (toolbar quota/credential refresh buttons, per-row credential check icons, and inactive-account refresh buttons), keeping active-account quota refresh on the current account row and sidebar switcher popover.
+
+### v2.13.1
+- **Subagent context and telemetry** (toggleable under `Settings -> Telemetry & progress`):
+  - Added token, cache hit rate, tool count, and estimated API cost aggregation for `SYSTEM_MESSAGE`-rooted subagent conversations, along with a batched `subagents.stats` host endpoint and general model short-name formatting.
+  - Added compact context ring + model badges on Overview `Subagents` rows (clicking opens full context and telemetry details), added model, context ring, and speed controls to subagent composer footers, and added subagent context and combined summary sections to the main composer popovers.
+  - Added main-conversation estimated API cost (and combined total with subagents) to the Session Statistics popover.
+- **Live execution phases in Overview Task Progress**: Combines live in-memory step state with local logs to distinguish waiting for approval, background retries (with attempt count and categorized reason such as EOF / 503 / 429 / region / timeout), active tool execution, thinking, waiting for model, and generating response.
+- **Added "Today" range in Overview**: Counts usage from local midnight (`00:00`) to now in the dashboard time range selector.
+- **Built-in update fallback in the official Aux Pane**: When an Antigravity client update breaks frontend bindings and hides the sidebar entry, the official `Powertools` side panel reports the client version and diagnostic error instead of a restart prompt, checks GitHub for a compatible release, and supports one-click SHA-256 verified updates directly from the panel.
 
 ### v2.13.0
 
