@@ -319,7 +319,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     if (typeof node === 'object') {
       if (typeof node.type === 'function') return collectText(node.type({ ...node.props, children: node.children }));
       const children = Array.isArray(node.children) ? node.children : [node.children];
-      return [collectText(children), collectText(node.props?.label), collectText(node.props?.rightElement)].filter(Boolean).join(' ');
+      return [collectText(children), collectText(node.props?.label), collectText(node.props?.rightElement), collectText(node.props?.extraContent)].filter(Boolean).join(' ');
     }
     return '';
   }
@@ -328,7 +328,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     if (Array.isArray(node)) { for (const item of node) { const r = find(item, id); if (r) return r; } return null; }
     if (node.props?.['data-testid'] === id) return node;
     if (typeof node.type === 'function') return find(node.type({ ...node.props, children: node.children }), id);
-    for (const value of [...(Array.isArray(node.children) ? node.children : [node.children]), node.props?.label, node.props?.rightElement]) {
+    for (const value of [...(Array.isArray(node.children) ? node.children : [node.children]), node.props?.label, node.props?.rightElement, node.props?.extraContent]) {
       const r = find(value, id);
       if (r) return r;
     }
@@ -339,7 +339,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     if (Array.isArray(node)) { for (const item of node) findAll(item, pred, out); return out; }
     if (pred(node)) out.push(node);
     if (typeof node.type === 'function') return findAll(node.type({ ...node.props, children: node.children }), pred, out);
-    for (const value of [...(Array.isArray(node.children) ? node.children : [node.children]), node.props?.label, node.props?.rightElement]) {
+    for (const value of [...(Array.isArray(node.children) ? node.children : [node.children]), node.props?.label, node.props?.rightElement, node.props?.extraContent]) {
       findAll(value, pred, out);
     }
     return out;
@@ -589,6 +589,15 @@ test('Overview defaults to Current weekly quota (本轮周限额内用量), disp
   assert.ok(settingRow);
   assert.ok(ui.collectText(settingRow).includes('概览默认时间范围'));
   assert.ok(ui.collectText(settingRow).includes('本轮周限额内用量'));
+  // User bubble tint defaults to off and hides color swatch row until enabled
+  assert.ok(ui.find(settingsTree, 'agy-setting-row-userBubbleTint'));
+  assert.equal(ui.find(settingsTree, 'agy-setting-row-userBubbleColor'), null);
+  const bubbleUi = createPanelHarness(null, { multiAccount: false, userBubbleTint: true, userBubblePreset: 'ocean' });
+  const bubbleSettings = bubbleUi.renderSettings();
+  assert.ok(bubbleUi.find(bubbleSettings, 'agy-setting-row-userBubbleColor'));
+  assert.ok(bubbleUi.find(bubbleSettings, 'agy-bubble-preset-accent'));
+  assert.ok(bubbleUi.find(bubbleSettings, 'agy-bubble-preset-ocean'));
+  assert.ok(bubbleUi.find(bubbleSettings, 'agy-bubble-preview'));
 
   // Untouched 100% weekly quota across all pools renders explicit 100% untouched label
   const untouchedUi = createPanelHarness(

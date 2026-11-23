@@ -366,6 +366,26 @@ test('resolveLocalFilePath parses local file URIs, strips fragments, and rejects
     writeFileSync(file, 'hello', 'utf8');
     const fileUri = `${pathToFileURL(file).href}#L10-L20`;
     assert.equal(resolveLocalFilePath(fileUri), file);
+    // Unescaped '#' in directory/file names (e.g. project-C#/app.exe) must not be truncated as URL hash
+    const hashDir = join(dir, 'project-C#');
+    mkdirSync(hashDir);
+    const hashFile = join(hashDir, 'app.exe');
+    writeFileSync(hashFile, 'bin', 'utf8');
+    const rawHashUri = pathToFileURL(hashFile).href.replaceAll('%23', '#');
+    assert.equal(resolveLocalFilePath(rawHashUri), hashFile);
+    assert.equal(resolveLocalFilePath(`${rawHashUri}#L10-L20`), hashFile);
+    // Antigravity URI serializer encodes '/' and second '#' inside the fragment as %2F and %23
+    const fragStart = rawHashUri.indexOf('#');
+    const encodedFragUri = `${rawHashUri.slice(0, fragStart + 1)}${rawHashUri.slice(fragStart + 1).replaceAll('/', '%2F')}`;
+    assert.equal(resolveLocalFilePath(encodedFragUri), hashFile);
+    assert.equal(resolveLocalFilePath(`${encodedFragUri}%23L10-L20`), hashFile);
+    const readmeInHashDir = join(hashDir, 'README.md');
+    writeFileSync(readmeInHashDir, '# hi', 'utf8');
+    const rawReadmeUri = pathToFileURL(readmeInHashDir).href.replaceAll('%23', '#');
+    assert.equal(resolveLocalFilePath(`${rawReadmeUri}#installation`), readmeInHashDir);
+    const readmeFragStart = rawReadmeUri.indexOf('#');
+    const encodedReadmeUri = `${rawReadmeUri.slice(0, readmeFragStart + 1)}${rawReadmeUri.slice(readmeFragStart + 1).replaceAll('/', '%2F')}%23installation`;
+    assert.equal(resolveLocalFilePath(encodedReadmeUri), readmeInHashDir);
     assert.throws(() => resolveLocalFilePath('https://example.com/a.md'), /仅支持本地文件链接/);
     assert.throws(() => resolveLocalFilePath('file://evil.example/share/a.md'), /仅支持本机文件路径/);
     assert.throws(() => resolveLocalFilePath(''), /文件路径无效/);

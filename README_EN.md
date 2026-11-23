@@ -295,6 +295,18 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.13.6
+- **Streamlined the Overview Task Progress panel and activity trail**:
+  - Merged live execution phases (waiting for model, thinking, running tool, approval, retrying) directly into the ring header so finished turns settle cleanly to `Complete`, with amber tinting for approval/retry states; removed the redundant horizontal progress bar and filler captions (`This turn has finished`, `Recent activity`).
+  - Replaced the flat activity list with a connected vertical timeline featuring a live pulsing node and per-step durations; anchored the 1-second live elapsed timer to the right so it no longer jumps horizontally when tool count changes from 0 to 1.
+- **Added missing Orchestrator tooltip translation**: Added Simplified and Traditional Chinese translation for `Offloads routine steps to a faster executor. Same quality, fewer tokens used.` in the model selector.
+
+### v2.13.5
+- **Added optional "Tint user message bubbles" setting (disabled by default)**: Adds a restrained low-saturation fill and hairline border to user message bubbles under `Settings -> Interface & display`, supporting Antigravity's native Accent color, 5 curated presets, and a custom color picker with a centered live preview.
+- **Refined `Requests` table width and column spacing**: Narrowed the `Requests` table container to `980px` (keeping `1200px` for `Errors`), tightened `Model` and `Cache hit rate` columns for even numeric spacing, and stacked cache anomaly tags cleanly below the percentage.
+- **Fixed file context menu failures on paths containing `#` (such as `project-C#`)**: Updated local and SSH `file://` URI resolution to strip only genuine line/heading fragments, preserve literal `#` in folder or file names, and restore `%2F` / `%5C` separators serialized into fragments by Antigravity's URI formatter.
+- **Expanded Antigravity 2.34.0 UI and dialog translations**: Added Simplified and Traditional Chinese translations for model selector descriptions and notices, secondary settings pages, permissions/MCP/hooks panels, confirmation modals, command palette actions, and dynamic count templates.
+
 ### v2.13.4
 - **Added "Current weekly quota" range in Overview as the new default (#12, thanks `@zhangyu-ch`)**: Resolves per-pool weekly reset windows for the active account and adds a configurable default Overview range under `Settings -> Telemetry & progress`.
 - **Added remote session telemetry for OpenSSH windows (#14, thanks `@reshdh`)**: Streams remote session, subagent, and dashboard metrics over local OpenSSH without leaving files on the remote host, isolates SSH component discovery cache, and reports per-window health.

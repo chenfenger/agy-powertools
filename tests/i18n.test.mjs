@@ -107,6 +107,16 @@ test('Swarm UI strings translate cleanly in zh-CN and zh-TW without middle dots 
   assert.equal(ovLabel, '概览 - 来自旁白笔记');
   assert.equal(ovLabel.includes('\u00b7'), false);
   assert.equal(t(`overview \u00b7 from the narrator's notes`, 'zh-TW'), '概覽 - 來自旁白筆記');
+  assert.equal(t('For most deep reasoning and complex problems', 'zh-CN'), '适用于深度推理与复杂问题');
+  assert.equal(t('For most deep reasoning and complex problems', 'zh-TW'), '適用於深度推理與複雜問題');
+  assert.equal(t('Notice', 'zh-CN'), '提示');
+  assert.equal(t('Offloads routine steps to a faster executor. Same quality, fewer tokens used.', 'zh-CN'), '将常规步骤分流给更快的执行模型，保持同等质量同时减少 Token 消耗。');
+  assert.equal(t('Chat Layout', 'zh-TW'), '聊天佈局'.replace('佈', '布'));
+  assert.equal(t('Tool Permissions', 'zh-TW'), '工具權限');
+  assert.equal(t('Confirm Undo', 'zh-CN'), '确认撤回');
+  assert.equal(t('Available AI Credits: 250', 'zh-CN'), '可用 AI 积分：250');
+  assert.equal(t('12 tools', 'zh-TW'), '12 個工具');
+  assert.equal(t('Show more (4)', 'zh-CN'), '显示更多 (4)');
   const i18nSrc = readFileSync('lib/native-i18n.js', 'utf8');
   assert.ok(i18nSrc.includes('.post-body') && i18nSrc.includes('#ov-frame'));
 });

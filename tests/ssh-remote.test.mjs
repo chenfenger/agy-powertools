@@ -123,6 +123,9 @@ test('resolveSshWindowConfig and resolveRemotePosixPath resolve metadata and POS
     assert.deepEqual(resolveSshWindowConfig('evil', { userDataDir: dir }), { host: 'evil', configFile: '' });
 
     assert.equal(resolveRemotePosixPath('file:///data/projects/a%20b.gd#L10'), '/data/projects/a b.gd');
+    assert.equal(resolveRemotePosixPath('file:///data/project-C#/src/app.cs#L10-L20'), '/data/project-C#/src/app.cs');
+    assert.equal(resolveRemotePosixPath('file:///data/project-C#%2Fsrc%2Fapp.cs%23L10-L20'), '/data/project-C#/src/app.cs');
+    assert.equal(resolveRemotePosixPath('file:///data/project-C#/README.md#overview'), '/data/project-C#/README.md');
     assert.equal(resolveRemotePosixPath('file://localhost/home/user/test.txt?foo=bar'), '/home/user/test.txt');
     assert.throws(() => resolveRemotePosixPath('file://remote-host/etc/passwd'));
     assert.throws(() => resolveRemotePosixPath('https://example.com/a'));
