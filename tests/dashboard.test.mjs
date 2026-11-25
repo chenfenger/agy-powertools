@@ -225,4 +225,69 @@ test('weeklyQuota resolves exact native reset windows, per-pool cycle boundaries
     { id: 'unattr-req', model: 'Gemini 4 Carbon (High)', timestampMs: geminiCycleStartMs + 120_000, durationMs: 1000, inputTokens: 500, cacheReadTokens: 0, outputTokens: 100, accountEmail: '', status: 'success' }
   ];
   assert.deepEqual(summarizeRequests(mixedAccountReqs, scopedRange).requests.map(r => r.id), ['alice-req', 'unattr-req']);
+
+  // Case 7: Filtering by an inactive account email MUST use that inactive account's cached groups (NOT active account's live window/estimates/samples)
+  const bobResetMs = now + 2 * 86400_000;
+  const bobCycleStartMs = bobResetMs - SEVEN_DAYS_MS;
+  const accountsState = {
+    activeId: 'a1',
+    accounts: [
+      { id: 'a1', email: 'alice@example.com', syncedAtMs: fetchedAtMs, groups: liveAccount.groups },
+      {
+        id: 'a2',
+        email: 'bob@example.com',
+        syncedAtMs: now - 3600_000,
+        groups: [{
+          displayName: 'Gemini Models',
+          buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.7, resetTimeMs: bobResetMs }]
+        }]
+      },
+      { id: 'a3', email: 'charlie@example.com', syncedAtMs: null, groups: [] }
+    ]
+  };
+  const bobRange = resolveWeeklyQuotaWindow({
+    account: liveAccount,
+    accounts: accountsState,
+    estimates: [{ bucketId: 'gemini-weekly', cycleStartMs: geminiCycleStartMs + 7200_000, resetTimeMs: geminiResetMs }],
+    quotaSamples: [{ bucketId: 'gemini-weekly', resetTimeMs: geminiResetMs, lastAt: now - 5_000 }],
+    email: 'bob@example.com',
+    activeEmail: 'alice@example.com',
+    fetchedAtMs,
+    now
+  });
+  assert.equal(bobRange.source, 'cached-account');
+  assert.equal(bobRange.status, 'active');
+  assert.equal(bobRange.resetTimeMs, bobResetMs);
+  assert.equal(bobRange.start, bobCycleStartMs);
+
+  // Inactive account with no cached groups falls back cleanly instead of borrowing active account's live window or quotaSamples
+  const charlieRange = resolveWeeklyQuotaWindow({
+    account: liveAccount,
+    accounts: accountsState,
+    quotaSamples: [{ bucketId: 'gemini-weekly', resetTimeMs: geminiResetMs, lastAt: now - 5_000 }],
+    email: 'charlie@example.com',
+    activeEmail: 'alice@example.com',
+    fetchedAtMs,
+    now
+  });
+  assert.equal(charlieRange.source, 'fallback');
+  assert.equal(charlieRange.status, 'fallback');
+  assert.equal(charlieRange.resetTimeMs, null);
+
+  // Case 8: Disabled buckets are ignored, and untouched 100% weekly bucket with description: '' is treated as unstarted
+  const placeholderUnstarted = resolveWeeklyQuotaWindow({
+    account: {
+      groups: [{
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-weekly', window: 'weekly', remaining: { case: 'remainingFraction', value: 1 }, resetTime: { seconds: BigInt(Math.floor((now + SEVEN_DAYS_MS) / 1000)) }, description: '' },
+          { bucketId: 'gemini-weekly-disabled', window: 'weekly', remainingFraction: 0.2, resetTimeMs: now + 86400_000, disabled: true }
+        ]
+      }]
+    },
+    fetchedAtMs: now,
+    now
+  });
+  assert.equal(placeholderUnstarted.status, 'unstarted');
+  assert.equal(placeholderUnstarted.resetTimeMs, null);
 });

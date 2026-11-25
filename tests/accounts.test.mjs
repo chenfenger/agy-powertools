@@ -260,7 +260,9 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
       if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
       return [states[i], val => { states[i] = typeof val === 'function' ? val(states[i]) : val; }];
     },
-    useEffect: () => {},
+    useEffect: (fn, deps) => {
+      if (typeof hooks.useEffect === 'function') hooks.useEffect(fn, deps);
+    },
     useSyncExternalStore: (_, getSnap) => getSnap()
   };
   const dashboardCode = readFileSync(new URL('../lib/dashboard.mjs', import.meta.url), 'utf8').replaceAll('export function', 'function');
@@ -272,8 +274,8 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     URL,
     window: { addEventListener() {}, removeEventListener() {} },
     document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } },
-    setInterval: () => 1,
-    clearInterval() {},
+    setInterval: hooks.setInterval || (() => 1),
+    clearInterval: hooks.clearInterval || (() => {}),
     UP: 'row',
     TP: 'card',
     VP: 'section',
@@ -292,9 +294,9 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
   });
   vm.runInContext(`(() => { ${dashboardCode}\n${helperCode}\nglobalThis.__agyDashboard = { modelIdentity, timestampToMs, resolveWeeklyQuotaWindow, dateRange, summarizeRequests, subscriptionIdentity, distributionModels }; globalThis.__agyAccounts = { quotaGroupMeta, accountBucketStatus, summarizeAccountQuota, formatRelativeTime, formatResetCountdown, formatCompactCountdown, accountInitials, selectAutoSwitchCandidate }; })();`, context);
   vm.runInContext(panelsCode, context);
-  const currentOpts = { enabled: true, language: 'zh-CN', overviewRange: 'weeklyQuota', multiAccount: true, accountSwitcher: true, accountViewMode: 'list', accountQuotaWindow: '5h', autoSwitchAccount: false, ...opts };
+  const currentOpts = { enabled: true, language: 'zh-CN', overviewRange: 'weeklyQuota', titlebarQuickPanel: true, multiAccount: true, accountSwitcher: true, accountViewMode: 'list', accountQuotaWindow: '5h', autoSwitchAccount: false, proxyEnabled: false, ...opts };
   const panels = context.__agyPanels({
-    version: '2.13.2',
+    version: '2.15.0',
     t: v => v,
     defaults: currentOpts,
     options: () => currentOpts,
@@ -303,21 +305,45 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     accounts: () => accountsData,
     account: () => hooks.account ?? null,
     accountFetchedAt: () => hooks.accountFetchedAt ?? null,
-    capabilities: () => ({ plan: 'Google AI Ultra', planId: 'g1-ultra-tier', email: 'alice@example.com', name: 'Alice Chen' }),
+    dashboard: () => typeof hooks.dashboard === 'function' ? hooks.dashboard() : (hooks.dashboard ?? null),
+    proxyStatus: () => typeof hooks.proxyStatus === 'function' ? hooks.proxyStatus() : (hooks.proxyStatus ?? null),
+    capabilities: () => hooks.capabilities ?? { plan: 'Google AI Ultra', planId: 'g1-ultra-tier', email: 'alice@example.com', name: 'Alice Chen' },
     estimates: () => hooks.estimates ?? [],
     subscribe: () => () => {},
     revision: () => 0,
+    request: () => Promise.resolve({ status: 'idle' }),
     change: patch => { Object.assign(currentOpts, patch); hooks.onChange?.(patch); return Promise.resolve(); },
+    loadDashboard: force => { hooks.onLoadDashboard?.(force); return Promise.resolve(typeof hooks.dashboard === 'function' ? hooks.dashboard() : hooks.dashboard); },
+    loadAccounts: () => { hooks.onLoadAccounts?.(); return Promise.resolve(accountsData); },
+    loadProxyStatus: () => { hooks.onLoadProxyStatus?.(); return Promise.resolve(typeof hooks.proxyStatus === 'function' ? hooks.proxyStatus() : hooks.proxyStatus); },
+    beamPreview: () => typeof hooks.beamPreview === 'function' ? hooks.beamPreview() : Boolean(hooks.beamPreview),
+    setBeamPreview: v => hooks.onSetBeamPreview?.(v),
+    openManagementTab: tab => hooks.onOpenManagementTab?.(tab),
     openNativeSettings: () => hooks.onOpenSettings?.(),
-    refreshAccountQuotas: id => { hooks.onRefreshQuotas?.(id); return Promise.resolve({ ok: true }); },
+    refreshAccountQuotas: id => {
+      hooks.onRefreshQuotas?.(id);
+      return hooks.refreshAccountQuotasImpl ? hooks.refreshAccountQuotasImpl(id) : Promise.resolve({ ok: true });
+    },
     refreshAccountCredentials: id => { hooks.onRefreshCredentials?.(id); return Promise.resolve({ ok: true }); }
   });
+  function renderChild(node) {
+    const prevComp = activeComponent;
+    const prevIdx = hookIdx;
+    activeComponent = `${prevComp}>${node.type.name || 'fn'}:${node.props?.key ?? ''}`;
+    hookIdx = 0;
+    try {
+      return node.type({ ...node.props, children: node.children });
+    } finally {
+      activeComponent = prevComp;
+      hookIdx = prevIdx;
+    }
+  }
   function collectText(node) {
     if (node == null || typeof node === 'boolean') return '';
     if (typeof node === 'string' || typeof node === 'number') return String(node);
     if (Array.isArray(node)) return node.map(collectText).join(' ');
     if (typeof node === 'object') {
-      if (typeof node.type === 'function') return collectText(node.type({ ...node.props, children: node.children }));
+      if (typeof node.type === 'function') return collectText(renderChild(node));
       const children = Array.isArray(node.children) ? node.children : [node.children];
       return [collectText(children), collectText(node.props?.label), collectText(node.props?.rightElement), collectText(node.props?.extraContent)].filter(Boolean).join(' ');
     }
@@ -327,7 +353,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     if (!node || typeof node !== 'object') return null;
     if (Array.isArray(node)) { for (const item of node) { const r = find(item, id); if (r) return r; } return null; }
     if (node.props?.['data-testid'] === id) return node;
-    if (typeof node.type === 'function') return find(node.type({ ...node.props, children: node.children }), id);
+    if (typeof node.type === 'function') return find(renderChild(node), id);
     for (const value of [...(Array.isArray(node.children) ? node.children : [node.children]), node.props?.label, node.props?.rightElement, node.props?.extraContent]) {
       const r = find(value, id);
       if (r) return r;
@@ -338,7 +364,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     if (!node || typeof node !== 'object') return out;
     if (Array.isArray(node)) { for (const item of node) findAll(item, pred, out); return out; }
     if (pred(node)) out.push(node);
-    if (typeof node.type === 'function') return findAll(node.type({ ...node.props, children: node.children }), pred, out);
+    if (typeof node.type === 'function') return findAll(renderChild(node), pred, out);
     for (const value of [...(Array.isArray(node.children) ? node.children : [node.children]), node.props?.label, node.props?.rightElement, node.props?.extraContent]) {
       findAll(value, pred, out);
     }
@@ -348,6 +374,8 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     renderOverview: dashboard => { activeComponent = 'overview'; hookIdx = 0; return panels.Overview({ dashboard }); },
     renderEventTable: (dashboard, errors = false) => { activeComponent = errors ? 'errors' : 'requests'; hookIdx = 0; return panels.EventTable({ dashboard, errors }); },
     renderSwitcher: () => { activeComponent = 'switcher'; hookIdx = 0; return panels.AccountSwitcher(); },
+    renderQuickPopover: () => { activeComponent = 'quick-popover'; hookIdx = 0; return panels.QuickPopover(); },
+    renderOverviewQuota: () => { activeComponent = 'overview-quota'; hookIdx = 0; return panels.OverviewQuota(); },
     renderQuotas: () => { activeComponent = 'quotas'; hookIdx = 0; return panels.Quotas(); },
     renderSettings: () => { activeComponent = 'settings'; hookIdx = 0; return panels.Settings(); },
     collectText,
@@ -616,6 +644,14 @@ test('Overview defaults to Current weekly quota (本轮周限额内用量), disp
   const untouchedText = untouchedUi.collectText(untouchedUi.find(untouchedTree, 'agy-range-summary'));
   assert.ok(untouchedText.includes('本轮周限额尚未开始消耗（剩余 100%）'));
   assert.equal(untouchedText.includes('\u00b7'), false);
+
+  // Loading state (dashboard === null) shows equal-height skeleton instead of fake zeros or empty text
+  const skelOverview = untouchedUi.renderOverview(null);
+  assert.ok(untouchedUi.find(skelOverview, 'agy-overview-skeleton'));
+  assert.equal(untouchedUi.find(skelOverview, 'agy-usage-heatmap'), null);
+  const skelEvents = untouchedUi.renderEventTable(null, false);
+  assert.ok(untouchedUi.find(skelEvents, 'agy-events-skeleton'));
+  assert.equal(untouchedUi.find(skelEvents, 'agy-requests-table'), null);
 });
 
 test('quota tracker account timeline isolates multi-account quota estimates and guards pre-upgrade mixed history', () => {
@@ -786,4 +822,696 @@ test('quota tracker backfills multi-account timeline from existing quota-samples
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('quota tracker uses incremental checkpoint calibration when cross-device usage occurs and OverviewQuota renders compact 5h/weekly pills', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-quota-multidev-'));
+  try {
+    const tracker = createQuotaTracker(dir);
+    const base = 1_795_400_000_000;
+    const weeklyReset = base + 6 * 86400_000;
+    const rates = [{ model: 'gemini-4-neon', input: 2, output: 12, cache: 0.2 }];
+    const mkReq = (id, ts, inputTokens = 1_000_000) => ({
+      id, model: 'Gemini 4 Neon (High)', timestampMs: ts, durationMs: 1000,
+      inputTokens, cacheReadTokens: 0, outputTokens: 50_000 // cost = $2 + $0.6 = $2.60
+    });
+
+    // Step 1: Another device (Mac) already spent 20% of the weekly quota before Windows starts (fraction = 0.80, 0 local requests)
+    const first = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.80, resetTimeMs: weeklyReset }] }],
+      [],
+      rates,
+      base,
+      'alice@example.com'
+    );
+    assert.equal(first.estimates[0].estimateUsd, null);
+
+    // Step 2: Windows runs 4 local requests ($10.40 total) and weekly fraction drops 0.80 -> 0.72 (local delta = 0.08)
+    // True 100% weekly budget = $10.40 / 0.08 = $130 (naive whole-cycle would wrongly give $10.40 / 0.28 = $37.14!)
+    const winReqs = [1, 2, 3, 4].map(i => mkReq(`w${i}`, base + i * 60_000));
+    const second = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.72, resetTimeMs: weeklyReset }] }],
+      winReqs,
+      rates,
+      base + 10 * 60_000,
+      'alice@example.com'
+    );
+    assert.equal(second.estimates[0].observedRequests, 4);
+    assert.ok(Math.abs(second.estimates[0].estimateUsd - 130) < 0.01, `Expected ~$130, got ${second.estimates[0].estimateUsd}`);
+
+    // Step 3: Another device spends 10% more mid-week (0.72 -> 0.62) with ZERO new local requests -> ignored cleanly!
+    const third = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.62, resetTimeMs: weeklyReset }] }],
+      winReqs,
+      rates,
+      base + 3600_000,
+      'alice@example.com'
+    );
+    assert.ok(Math.abs(third.estimates[0].estimateUsd - 130) < 0.01);
+
+    // Step 4: OverviewQuota renders compact 5h + weekly pills when enabled and stays hidden when disabled
+    const accountMock = {
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            { bucketId: 'gemini-weekly', window: 'weekly', remaining: { case: 'remainingFraction', value: 0.72 }, resetTime: { seconds: BigInt(Math.floor(weeklyReset / 1000)) } },
+            { bucketId: 'gemini-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.85 }, resetTime: { seconds: BigInt(Math.floor((base + 14400_000) / 1000)) } }
+          ]
+        }
+      ]
+    };
+    const offUi = createPanelHarness(null, { multiAccount: false, overviewQuota: false }, { account: accountMock });
+    assert.equal(offUi.renderOverviewQuota(), null);
+    const onUi = createPanelHarness(null, { multiAccount: false, overviewQuota: true }, { account: accountMock });
+    const qTree = onUi.renderOverviewQuota();
+    assert.ok(qTree);
+    const qText = onUi.collectText(qTree);
+    assert.ok(qText.includes('Gemini'));
+    assert.ok(qText.includes('85%'));
+    assert.ok(qText.includes('72%'));
+    assert.equal(qText.includes('\u00b7'), false);
+    const qToggle = onUi.find(qTree, 'agy-overview-quota-toggle');
+    assert.ok(qToggle);
+    assert.equal(qToggle.props['aria-expanded'], true);
+    qToggle.props.onClick();
+    const collapsedTree = onUi.renderOverviewQuota();
+    const collapsedToggle = onUi.find(collapsedTree, 'agy-overview-quota-toggle');
+    assert.equal(collapsedToggle.props['aria-expanded'], false);
+    const collapsedText = onUi.collectText(collapsedTree);
+    assert.ok(collapsedText.includes('当前额度'));
+    assert.ok(collapsedText.includes('72%'));
+    assert.ok(!collapsedText.includes('Gemini'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('createAccountsStore blocks cross-account credential clobbering on email mismatch and relaunches cleanly on completeAdd', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-accounts-mismatch-'));
+  let clock = 1_795_400_000_000;
+  let relaunches = 0;
+  const makeToken = (email, rev) => JSON.stringify({
+    token: { access_token: `acc-${email}-${rev}`, refresh_token: `rt-${email}` },
+    auth_method: 'consumer',
+    id_token_email: email
+  });
+  const emailOf = raw => {
+    try { return JSON.parse(raw).id_token_email.toLowerCase(); } catch { return ''; }
+  };
+  const slots = new Map([['gemini:antigravity', makeToken('alpha@example.com', 1)]]);
+  const hashOf = v => `H_${String(v)}`;
+  const vault = {
+    supported: true,
+    slots,
+    has: t => slots.has(t),
+    inspect(t) {
+      if (!slots.has(t)) return { exists: false, hash: '' };
+      const raw = slots.get(t);
+      const email = emailOf(raw);
+      return { exists: true, hash: hashOf(raw), ...(email ? { email } : {}) };
+    },
+    copy(from, to, { expectedEmail = '' } = {}) {
+      if (!slots.has(from)) return { ok: false, error: 'missing source' };
+      const raw = slots.get(from);
+      const actualEmail = emailOf(raw);
+      const expected = String(expectedEmail || '').trim().toLowerCase();
+      if (expected && actualEmail && actualEmail !== expected) {
+        return { ok: false, mismatch: true, actualEmail, expectedEmail: expected, error: 'mismatch' };
+      }
+      slots.set(to, raw);
+      return { ok: true, bytes: raw.length, hash: hashOf(raw), ...(actualEmail ? { email: actualEmail } : {}) };
+    },
+    remove: t => { slots.delete(t); return { ok: true }; },
+    saveActiveTo(id, opts) { return this.copy('gemini:antigravity', `agy-powertools:account:${id}`, opts); },
+    restoreToActive(id, opts) { return this.copy(`agy-powertools:account:${id}`, 'gemini:antigravity', opts); },
+    hasSaved(id) { return this.has(`agy-powertools:account:${id}`); },
+    inspectSaved(id) { return this.inspect(`agy-powertools:account:${id}`); },
+    inspectActive() { return this.inspect('gemini:antigravity'); },
+    removeSaved(id) { return this.remove(`agy-powertools:account:${id}`); }
+  };
+
+  try {
+    const store = createAccountsStore(dir, {
+      now: () => clock,
+      vault,
+      relaunch: () => { relaunches++; return { scheduled: true }; }
+    });
+
+    // 1. Initial sync of alpha
+    const s1 = store.syncActive({
+      email: 'alpha@example.com',
+      name: 'Alpha',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.14, resetTimeMs: clock + 86400_000 }] }]
+    });
+    const alphaId = s1.activeId;
+
+    // 2. prepareAdd -> sign in as beta -> syncActive -> completeAdd triggers relaunch + pendingSwitch lock
+    const prep = store.prepareAdd({ pendingAlias: 'Ultra 20X' });
+    assert.equal(prep.backedUpId, alphaId);
+    assert.ok(prep.prevCredHash);
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 1));
+    clock += 5_000;
+    const s2 = store.syncActive({
+      email: 'beta@example.com',
+      name: 'Beta',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.95, resetTimeMs: clock + 7 * 86400_000 }] }]
+    });
+    const betaId = s2.activeId;
+    assert.notEqual(betaId, alphaId);
+    assert.equal(s2.accounts.find(a => a.id === betaId).alias, 'Ultra 20X');
+
+    const completed = store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: prep.prevCredHash });
+    assert.equal(completed.ok, true);
+    assert.equal(completed.relaunching, true);
+    assert.equal(completed.manualRestartRequired, false);
+    assert.equal(relaunches, 1);
+
+    // Stale alpha UI poll during shutdown is ignored by pendingSwitch
+    const duringShutdown = store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    assert.equal(duringShutdown.activeId, betaId);
+    // Relaunched as beta clears pendingSwitch
+    store.syncActive({ email: 'beta@example.com', name: 'Beta' });
+
+    // 3. Simulate stale language_server refresh overwriting active keyring with a NEW alpha token (different hash!) while UI still displays beta
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 2));
+    clock += 3000_000;
+    const drifted = store.syncActive({
+      email: 'beta@example.com',
+      name: 'Beta',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.08, resetTimeMs: clock + 86400_000 }] }]
+    });
+    assert.deepEqual(drifted.credentialMismatch, { uiEmail: 'beta@example.com', credentialEmail: 'alpha@example.com' });
+    // Beta's vault slot and saved 95% quota MUST remain intact!
+    assert.equal(emailOf(slots.get(`agy-powertools:account:${betaId}`)), 'beta@example.com');
+    assert.equal(drifted.accounts.find(a => a.id === betaId).groups[0].buckets[0].remainingFraction, 0.95);
+
+    // When UI later catches up and flips to alpha, beta's vault slot stays valid (not wiped by duplicate hash!)
+    const reverted = store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    assert.equal(reverted.accounts.find(a => a.id === betaId).hasCredential, true);
+    assert.equal(reverted.accounts.find(a => a.id === alphaId).hasCredential, true);
+
+    // 4. Even if beta's slot was previously corrupted with an alpha token of a DIFFERENT hash, refreshCredentials & switchAccount catch it via id_token_email
+    slots.set(`agy-powertools:account:${betaId}`, makeToken('alpha@example.com', 3));
+    const check = store.refreshCredentials({ accountId: betaId });
+    assert.equal(check.valid, 0);
+    assert.equal(check.invalid, 1);
+    assert.equal(check.account.hasCredential, false);
+    assert.throws(() => store.switchAccount(betaId), /不一致|重新登录/);
+
+    // 5. prepareAdd does not deadlock when active keyring already mismatches displayed account
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 4));
+    const prepMismatch = store.prepareAdd();
+    assert.equal(prepMismatch.ok, true);
+
+    // 6. completeAdd does NOT relaunch when nothing changed (cancelled login), and DOES relaunch on same-email token rotation
+    const unchanged = store.completeAdd({
+      email: 'alpha@example.com',
+      prevEmail: 'alpha@example.com',
+      prevCredHash: vault.inspectActive().hash
+    });
+    assert.equal(unchanged.relaunching, false);
+    assert.equal(relaunches, 1);
+
+    const prevHash = vault.inspectActive().hash;
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 5));
+    const rotated = store.completeAdd({
+      email: 'alpha@example.com',
+      prevEmail: 'alpha@example.com',
+      prevCredHash: prevHash
+    });
+    assert.equal(rotated.relaunching, true);
+    assert.equal(relaunches, 2);
+
+    // Clear pendingSwitch from rotation before testing slow-Redux add
+    store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+
+    // 7. Slow-Redux race: OAuth wrote gamma@example.com to OS keyring before UI capabilities().email left alpha@example.com.
+    // completeAdd MUST adopt gamma instead of restoring alpha's backup over gamma's fresh credential.
+    const prepSlow = store.prepareAdd({ pendingAlias: 'Slow UI' });
+    slots.set('gemini:antigravity', makeToken('gamma@example.com', 1));
+    clock += 6_000;
+    const slowComplete = store.completeAdd({
+      email: 'alpha@example.com',
+      prevEmail: 'alpha@example.com',
+      prevCredHash: prepSlow.prevCredHash
+    });
+    assert.equal(slowComplete.ok, true);
+    assert.equal(slowComplete.accountChanged, true);
+    assert.equal(slowComplete.relaunching, true);
+    assert.equal(relaunches, 3);
+    assert.equal(slowComplete.account.email, 'gamma@example.com');
+    assert.equal(slowComplete.account.alias, 'Slow UI');
+    assert.equal(emailOf(slots.get('gemini:antigravity')), 'gamma@example.com');
+    assert.equal(emailOf(slots.get(`agy-powertools:account:${slowComplete.activeId}`)), 'gamma@example.com');
+    // Relaunching into gamma clears pendingSwitch and hydrates name cleanly
+    const gammaSynced = store.syncActive({ email: 'gamma@example.com', name: 'Gamma' });
+    assert.equal(gammaSynced.activeId, slowComplete.activeId);
+
+    // 8. Cancelled login while pre-drifted (UI=gamma, keyring=alpha, hash unchanged) MUST NOT throw or clobber keyring, and clears stale pendingAlias
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 6));
+    const prepCancel = store.prepareAdd({ pendingAlias: 'Cancelled Alias' });
+    const cancelled = store.completeAdd({
+      email: 'gamma@example.com',
+      prevEmail: 'gamma@example.com',
+      prevCredHash: prepCancel.prevCredHash
+    });
+    assert.equal(cancelled.ok, true);
+    assert.equal(cancelled.relaunching, false);
+    assert.equal(cancelled.manualRestartRequired, false);
+    assert.equal(relaunches, 3);
+    assert.equal(emailOf(slots.get('gemini:antigravity')), 'alpha@example.com');
+    // Subsequent new account sync does not inherit the cancelled alias
+    slots.set('gemini:antigravity', makeToken('delta@example.com', 1));
+    const deltaSynced = store.syncActive({ email: 'delta@example.com', name: 'Delta' });
+    assert.equal(deltaSynced.accounts.find(a => a.email === 'delta@example.com').alias, '');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('accountBucketStatus, summarizeAccountQuota, and accounts store guard unknown/active/skewed resets, disabled buckets, and untouched 100% countdowns', () => {
+  const now = 1_795_500_000_000;
+
+  // 1. Unknown rawFraction (null) MUST NOT be fabricated as 100% when resetTimeMs has passed
+  const unknownExpired = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: null, resetTimeMs: now - 30_000 }, now);
+  assert.equal(unknownExpired.isReset, false);
+  assert.equal(unknownExpired.effectiveFraction, null);
+  assert.equal(unknownExpired.tone, 'unknown');
+
+  // 2. Active account MUST NOT override live fraction to 100% under slight clock/cache skew
+  const activeSkewed = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: 0.34, resetTimeMs: now - 15_000 }, now, { isActive: true });
+  assert.equal(activeSkewed.isReset, false);
+  assert.equal(activeSkewed.effectiveFraction, 0.34);
+  assert.equal(activeSkewed.tone, 'ok');
+
+  // 3. Inactive account snapshot captured AFTER resetTimeMs (syncedAtMs >= resetTimeMs) MUST NOT falsely reset
+  const inactiveSkewed = accountBucketStatus(
+    { bucketId: 'g-5h', window: '5h', remainingFraction: 0.22, resetTimeMs: now - 20_000 },
+    now,
+    { isActive: false, syncedAtMs: now - 10_000 }
+  );
+  assert.equal(inactiveSkewed.isReset, false);
+  assert.equal(inactiveSkewed.effectiveFraction, 0.22);
+  assert.equal(inactiveSkewed.tone, 'warning');
+
+  // 4. Untouched 100% bucket with explicit description: '' strips placeholder resetTimeMs, while legacy fixture without description keeps it
+  const untouchedPlaceholder = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: 1, resetTimeMs: now + 18_000_000, description: '' }, now);
+  assert.equal(untouchedPlaceholder.resetTimeMs, null);
+  const legacyFull = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: 1, resetTimeMs: now + 18_000_000 }, now);
+  assert.equal(legacyFull.resetTimeMs, now + 18_000_000);
+
+  // 5. summarizeAccountQuota filters disabled buckets and propagates syncedAtMs
+  const summary = summarizeAccountQuota({
+    syncedAtMs: now - 5_000,
+    groups: [{
+      displayName: 'Gemini Models',
+      buckets: [
+        { bucketId: 'g-disabled', window: '5h', remainingFraction: 0, resetTimeMs: now + 3600_000, disabled: true },
+        { bucketId: 'g-5h', window: '5h', remainingFraction: 0.4, resetTimeMs: now - 10_000 }
+      ]
+    }]
+  }, now);
+  assert.equal(summary.groups[0].buckets.length, 1);
+  assert.equal(summary.groups[0].buckets[0].bucketId, 'g-5h');
+  assert.equal(summary.groups[0].buckets[0].isReset, false);
+  assert.equal(summary.groups[0].buckets[0].effectiveFraction, 0.4);
+
+  // 6. Store syncActive with empty groups preserves existing groups and syncedAtMs, and refreshLocalQuotas respects syncedAtMs >= resetTimeMs
+  const dir = mkdtempSync(join(tmpdir(), 'agy-accounts-accuracy-'));
+  let clock = now;
+  const vault = createFakeVault({ 'gemini:antigravity': 'tok-a' });
+  try {
+    const store = createAccountsStore(dir, { now: () => clock, vault });
+    const s1 = store.syncActive({
+      email: 'alpha@example.com',
+      name: 'Alpha',
+      groups: [{
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'g-5h', window: '5h', remainingFraction: 0.55, resetTimeMs: clock - 5_000 },
+          { bucketId: 'g-untouched', window: 'weekly', remainingFraction: 1, resetTimeMs: clock + 604_800_000, description: '' },
+          { bucketId: 'g-off', window: '5h', remainingFraction: 0, resetTimeMs: clock + 3600_000, disabled: true }
+        ]
+      }]
+    });
+    const alpha = s1.accounts[0];
+    assert.equal(alpha.syncedAtMs, now);
+    assert.equal(alpha.groups[0].buckets.length, 2);
+    assert.equal(alpha.groups[0].buckets[1].resetTimeMs, null);
+
+    // Subsequent syncActive with groups: [] (e.g. startAddAccount fallback) preserves groups and syncedAtMs
+    clock += 120_000;
+    const s2 = store.syncActive({ email: 'alpha@example.com', name: 'Alpha', groups: [] });
+    assert.equal(s2.accounts[0].groups[0].buckets[0].remainingFraction, 0.55);
+    assert.equal(s2.accounts[0].syncedAtMs, now);
+    assert.equal(s2.accounts[0].lastUsedAtMs, clock);
+
+    // Switch to beta so alpha becomes inactive, then run refreshLocalQuotas -> alpha's skewed bucket (syncedAtMs >= resetTimeMs) stays 0.55
+    vault.slots.set('gemini:antigravity', 'tok-b');
+    store.syncActive({
+      email: 'beta@example.com',
+      name: 'Beta',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.9, resetTimeMs: clock + 3600_000 }] }]
+    });
+    clock += 60_000;
+    const refreshed = store.refreshLocalQuotas({ accountId: '' });
+    assert.equal(refreshed.accounts.find(a => a.email === 'alpha@example.com').groups[0].buckets[0].remainingFraction, 0.55);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Quotas and AccountSwitcher fuse live active data, fix header identity drift, show popover errors, tick countdowns while open, and flag weekly risk on 5H view', async () => {
+  const now = Date.now();
+  const accountsData = {
+    activeId: 'acct-1',
+    accounts: [
+      {
+        id: 'acct-1',
+        email: 'alice@example.com',
+        name: 'Alice Chen',
+        alias: '主力号',
+        tier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+        disabled: false,
+        hasCredential: true,
+        syncedAtMs: now - 120_000,
+        lastUsedAtMs: now - 120_000,
+        // Stale store snapshot has 90%, while live env.account() has 35% with slightly past resetTime
+        groups: [
+          { displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.9, resetTimeMs: now + 3600_000 }] }
+        ]
+      },
+      {
+        id: 'acct-2',
+        email: 'bob@example.com',
+        name: 'Bob Lin',
+        alias: '',
+        tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+        disabled: false,
+        hasCredential: true,
+        syncedAtMs: now - 7_200_000,
+        lastUsedAtMs: now - 7_200_000,
+        // Expired 5h (estimated 100%) but critical weekly (5%)
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            buckets: [
+              { bucketId: 'g-5h', window: '5h', remainingFraction: 0.1, resetTimeMs: now - 60_000 },
+              { bucketId: 'g-weekly', window: 'weekly', remainingFraction: 0.05, resetTimeMs: now + 3 * 86400_000 }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  const liveAccount = {
+    groups: [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.35 }, resetTime: { seconds: BigInt(Math.floor((now - 5_000) / 1000)) } },
+          { bucketId: 'gemini-weekly-pool', remainingFraction: 0.62, resetTimeMs: now + 4 * 86400_000 },
+          { bucketId: 'gemini-untouched', window: '5h', remainingFraction: 1, resetTimeMs: now + 18_000_000, description: '' },
+          { bucketId: 'gemini-disabled', window: '5h', remainingFraction: 0, resetTimeMs: now + 3600_000, disabled: true }
+        ]
+      }
+    ]
+  };
+
+  let intervalCount = 0;
+  let clearedCount = 0;
+  let lastEffectOpen = undefined;
+  let activeCleanup = null;
+  const ui = createPanelHarness(
+    accountsData,
+    { multiAccount: true, accountViewMode: 'list', accountQuotaWindow: '5h' },
+    {
+      account: liveAccount,
+      accountFetchedAt: now,
+      useEffect: (fn, deps) => {
+        if (!Array.isArray(deps) || deps.length !== 1 || typeof deps[0] !== 'boolean') return;
+        if (deps[0] === lastEffectOpen) return;
+        lastEffectOpen = deps[0];
+        activeCleanup?.();
+        activeCleanup = fn() || null;
+      },
+      setInterval: () => ++intervalCount,
+      clearInterval: () => { clearedCount++; },
+      refreshAccountQuotasImpl: () => Promise.reject(new Error('刷新接口超时'))
+    }
+  );
+
+  // 1. Quotas top cards filter disabled bucket, classify weekly via bucketId regex, support remainingFraction,
+  //    and fuse live 35% (NOT 90% stale store, NOT 100% false reset) into active row!
+  const qTree = ui.renderQuotas();
+  const qText = ui.collectText(qTree);
+  assert.ok(qText.includes('35.0%'));
+  assert.ok(qText.includes('62.0%'));
+  assert.ok(qText.includes('100.0%'));
+  assert.ok(qText.includes('周限额'));
+  assert.equal(/(?:^|[^\d])0\.0%/.test(qText), false);
+  const quotaBuckets = ui.findAll(qTree, n => n.props?.className === 'pt-quota');
+  assert.equal(quotaBuckets.length, 3);
+  assert.equal(ui.collectText(quotaBuckets[2]).includes(':'), false);
+  const activeRow = ui.find(qTree, 'agy-account-row-acct-1');
+  assert.ok(ui.collectText(activeRow).includes('35%'));
+  assert.equal(ui.collectText(activeRow).includes('90%'), false);
+
+  // Inactive row in 5H view shows weekly risk escalation (data-weekly-risk="critical") + ≈100% + 周 5% with zero banned words
+  const bobRow = ui.find(qTree, 'agy-account-row-acct-2');
+  const bobChip = ui.findAll(bobRow, n => n.props?.className === 'pt-acct-quota-chip')[0];
+  assert.equal(bobChip.props['data-estimated'], 'true');
+  assert.equal(bobChip.props['data-weekly-risk'], 'critical');
+  assert.equal(bobChip.props['data-tone'], 'critical');
+  assert.ok(ui.collectText(bobChip).includes('≈100%'));
+  assert.ok(ui.collectText(bobChip).includes('周 5%'));
+  for (const banned of ['实时同步', '额度充裕', '部分限额接近耗尽', '切入后自动刷新最新额度', '5 小时已回满', '已重置（预计 100%）', '已重置', '\u00b7']) {
+    assert.equal(qText.includes(banned), false, `Unexpected banned text in Quotas: ${banned}`);
+  }
+
+  // 2. AccountSwitcher: live fusion, periodic now timer while open with cleanup, and inline error display on failed refresh
+  let swTree = ui.renderSwitcher();
+  assert.equal(intervalCount, 0);
+  ui.find(swTree, 'agy-account-switcher-trigger').props.onClick();
+  swTree = ui.renderSwitcher();
+  assert.equal(intervalCount, 1);
+  const swActiveRow = ui.find(swTree, 'agy-account-row-acct-1');
+  assert.ok(ui.collectText(swActiveRow).includes('35%'));
+  await ui.find(swTree, 'agy-popover-refresh-quotas').props.onClick();
+  await new Promise(r => setTimeout(r, 10));
+  swTree = ui.renderSwitcher();
+  const popErr = ui.find(swTree, 'agy-popover-error');
+  assert.ok(popErr);
+  assert.ok(ui.collectText(popErr).includes('刷新接口超时'));
+  // Closing popover clears the periodic timer and stale error
+  ui.find(swTree, 'agy-account-switcher-trigger').props.onClick();
+  swTree = ui.renderSwitcher();
+  assert.equal(clearedCount, 1);
+  assert.equal(ui.find(swTree, 'agy-popover-error'), null);
+
+  // 3. Quotas top header identity follows capabilities().email when store.activeId temporarily drifts,
+  //    and does NOT leak live groups into the mismatched store.activeId row.
+  const driftUi = createPanelHarness(
+    accountsData,
+    { multiAccount: true, accountViewMode: 'list' },
+    {
+      account: liveAccount,
+      capabilities: { plan: 'Google AI Pro', planId: 'g1-pro-tier', email: 'bob@example.com', name: 'Bob Lin' }
+    }
+  );
+  const driftQuotas = driftUi.renderQuotas();
+  const topPlanRow = driftUi.find(driftQuotas, 'agy-setting-row-current-plan');
+  assert.ok(driftUi.collectText(topPlanRow).includes('bob@example.com'));
+  assert.equal(driftUi.collectText(topPlanRow).includes('alice@example.com'), false);
+  const driftedAcct1Row = driftUi.find(driftQuotas, 'agy-account-row-acct-1');
+  assert.ok(driftUi.collectText(driftedAcct1Row).includes('90%'));
+  assert.equal(driftUi.collectText(driftedAcct1Row).includes('35%'), false);
+});
+
+test('QuickPopover reuses full panels across all 6 tabs with lazy loading, badge guards, tab memory, and zero middle dots', async () => {
+  const now = Date.now();
+  const dashboardLoads = [];
+  let proxyLoads = 0;
+  const openedTabs = [];
+  const sampleDashboard = {
+    activeAccountEmail: 'alice@example.com',
+    accountEmails: ['alice@example.com'],
+    pricing: { rates: [{ model: 'gemini-4-neon', input: 2, output: 12, cache: 0.2 }] },
+    requests: [
+      { id: 'r1', timestampMs: now - 3600_000, model: 'Gemini 4 Neon', inputTokens: 1000, cacheReadTokens: 3000, outputTokens: 500, costUsd: 0.12, status: 'success', tps: 42, ttftMs: 1200, cacheHitPercent: 75, conversationId: 'conv-1', accountEmail: 'alice@example.com' }
+    ],
+    errors: [
+      { id: 'e1', timestampMs: now - 3200_000, model: 'Claude Sonnet 4', error: 'HTTP 429 rate limited', status: 'error', conversationId: 'conv-1', accountEmail: 'alice@example.com' }
+    ]
+  };
+  const accountsData = {
+    activeId: 'acct-1',
+    accounts: [{
+      id: 'acct-1',
+      email: 'alice@example.com',
+      name: 'Alice Chen',
+      tier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+      disabled: false,
+      hasCredential: true,
+      groups: [
+        { displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.82, resetTimeMs: now + 3600_000 }] },
+        { displayName: 'Claude and GPT models', buckets: [{ bucketId: 'c-5h', window: '5h', remainingFraction: 0.18, resetTimeMs: now + 3600_000 }] },
+        { displayName: 'Disabled Pool', buckets: [{ bucketId: 'd-5h', window: '5h', disabled: true, remainingFraction: 0.01, resetTimeMs: now + 3600_000 }] }
+      ]
+    }]
+  };
+
+  const ui = createPanelHarness(
+    accountsData,
+    { enabled: true, titlebarQuickPanel: true, multiAccount: true, overviewRange: '24h' },
+    {
+      dashboard: sampleDashboard,
+      proxyStatus: () => ({ reason: 'active', mismatch: false }),
+      onLoadDashboard: force => dashboardLoads.push(force),
+      onLoadProxyStatus: () => { proxyLoads++; },
+      onOpenManagementTab: tab => openedTabs.push(tab)
+    }
+  );
+
+  // Settings exposes single titlebarQuickPanel toggle (no redundant mode/custom settings) and composerWorkingBeam (default off, hides palette row)
+  const settingsTree = ui.renderSettings();
+  assert.ok(ui.find(settingsTree, 'agy-setting-titlebarQuickPanel'));
+  assert.equal(ui.find(settingsTree, 'agy-setting-row-titlebarQuickPanelMode'), null);
+  assert.ok(ui.find(settingsTree, 'agy-setting-composerWorkingBeam'));
+  assert.equal(ui.find(settingsTree, 'agy-setting-row-composerWorkingBeamPalette'), null);
+  let previewOn = false;
+  const beamUi = createPanelHarness(
+    accountsData,
+    { enabled: true, composerWorkingBeam: true, composerWorkingBeamPalette: 'aurora' },
+    { beamPreview: () => previewOn, onSetBeamPreview: v => { previewOn = Boolean(v); } }
+  );
+  const beamSettings = beamUi.renderSettings();
+  assert.ok(beamUi.find(beamSettings, 'agy-setting-row-composerWorkingBeamPalette'));
+  assert.equal(beamUi.find(beamSettings, 'agy-beam-palette-aurora')?.props?.['aria-pressed'], true);
+  const previewBtn = beamUi.find(beamSettings, 'agy-beam-preview-toggle');
+  assert.ok(previewBtn);
+  assert.equal(previewBtn.props['aria-pressed'], false);
+  previewBtn.props.onClick();
+  assert.equal(previewOn, true);
+  assert.equal(beamUi.find(beamUi.renderSettings(), 'agy-beam-preview-toggle')?.props?.['aria-pressed'], true);
+
+  // Closed by default: zero lazy loads; ignores disabled 1% bucket, warns on 18% active bucket and shows multiline tooltip + first-time alert callout
+  let tree = ui.renderQuickPopover();
+  const trigger = ui.find(tree, 'agy-titlebar-quick-trigger');
+  assert.ok(trigger);
+  assert.equal(ui.find(tree, 'agy-quick-trigger-badge')?.props?.['data-tone'], 'warning');
+  assert.equal(trigger.props['aria-label'], 'Powertools 快捷概览（低额度：Claude/GPT 5h 18%）');
+  const tipNode = ui.find(tree, 'agy-quick-trigger-tooltip');
+  assert.ok(tipNode);
+  const tipRows = ui.findAll(tipNode, n => n.props?.className === 'pt-qp-tip-row');
+  assert.equal(tipRows.length, 1);
+  assert.equal(tipRows[0].props['data-tone'], 'warning');
+  assert.equal(ui.collectText(tipRows[0]).trim(), '低额度：Claude/GPT 5h 18%');
+  assert.ok(ui.find(tree, 'agy-quick-alert-callout'));
+  assert.equal(ui.find(tree, 'agy-quick-popover'), null);
+  assert.equal(dashboardLoads.length, 0);
+  assert.equal(proxyLoads, 0);
+
+  // Clicking "我知道了" hides both the callout and the corner dot for the current alert event
+  ui.find(tree, 'agy-quick-alert-ack').props.onClick();
+  tree = ui.renderQuickPopover();
+  assert.equal(ui.find(tree, 'agy-quick-alert-callout'), null);
+  assert.equal(ui.find(tree, 'agy-quick-trigger-badge'), null);
+  assert.ok(ui.find(tree, 'agy-quick-trigger-tooltip'));
+
+  // Multiline tooltip covers critical + warning + pending proxy and "不再提醒" mutes until restored in Settings
+  const critProxyUi = createPanelHarness(
+    {
+      activeId: 'acct-1',
+      accounts: [{
+        id: 'acct-1',
+        email: 'alice@example.com',
+        name: 'Alice Chen',
+        groups: [
+          { displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.06 }] },
+          { displayName: 'Claude and GPT models', buckets: [{ bucketId: 'c-w', window: 'weekly', remainingFraction: 0.19 }] }
+        ]
+      }]
+    },
+    { enabled: true, titlebarQuickPanel: true, language: 'zh-CN' },
+    { proxyStatus: () => ({ reason: 'not-applied', mismatch: true }) }
+  );
+  let critTree = critProxyUi.renderQuickPopover();
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-trigger-badge')?.props?.['data-tone'], 'critical');
+  assert.ok(critProxyUi.find(critTree, 'agy-quick-alert-callout'));
+  const critTipBox = critProxyUi.find(critTree, 'agy-quick-trigger-tooltip');
+  const critRows = critProxyUi.findAll(critTipBox, n => n.props?.className === 'pt-qp-tip-row');
+  assert.deepEqual(
+    critRows.map(r => [r.props['data-tone'], critProxyUi.collectText(r).trim()]),
+    [
+      ['critical', '额度告急：Gemini 5h 6%'],
+      ['warning', '低额度：Claude/GPT 周 19%'],
+      ['warning', '独立代理待重启生效']
+    ]
+  );
+  const critText = critProxyUi.collectText(critTipBox);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) assert.equal(critText.includes(forbidden), false);
+  assert.equal(critProxyUi.find(critProxyUi.renderSettings(), 'agy-setting-row-quickBadgeMuted'), null);
+  critProxyUi.find(critTree, 'agy-quick-alert-mute').props.onClick();
+  critTree = critProxyUi.renderQuickPopover();
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-alert-callout'), null);
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-trigger-badge'), null);
+  const unmuteBtn = critProxyUi.find(critProxyUi.renderSettings(), 'agy-quick-badge-unmute');
+  assert.ok(unmuteBtn);
+  unmuteBtn.props.onClick();
+  critTree = critProxyUi.renderQuickPopover();
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-trigger-badge')?.props?.['data-tone'], 'critical');
+  assert.ok(critProxyUi.find(critTree, 'agy-quick-alert-callout'));
+
+  const healthyUi = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.9 }] }] }] },
+    { enabled: true, titlebarQuickPanel: true, language: 'zh-CN' },
+    { proxyStatus: () => ({ reason: 'disabled', mismatch: false }) }
+  );
+  const healthyTree = healthyUi.renderQuickPopover();
+  assert.equal(healthyUi.find(healthyTree, 'agy-quick-trigger-badge'), null);
+  assert.equal(healthyUi.find(healthyTree, 'agy-quick-alert-callout'), null);
+  assert.equal(healthyUi.find(healthyTree, 'agy-quick-trigger-tooltip'), null);
+  assert.equal(healthyUi.find(healthyTree, 'agy-titlebar-quick-trigger')?.props?.['aria-label'], 'Powertools 快捷概览');
+
+  // Open -> lazy loads once; all 6 full native components render cleanly with zero middle dots
+  trigger.props.onClick();
+  assert.deepEqual(dashboardLoads, [false]);
+  assert.equal(proxyLoads, 1);
+
+  tree = ui.renderQuickPopover();
+  assert.ok(ui.find(tree, 'agy-usage-heatmap'));
+  for (const [tabKey, expectedTestId] of [
+    ['overview', 'agy-usage-heatmap'],
+    ['requests', 'agy-requests-table'],
+    ['errors', 'agy-errors-table'],
+    ['quota', 'agy-accounts-overview'],
+    ['pricing', 'agy-price-table'],
+    ['settings', 'agy-about-version']
+  ]) {
+    ui.find(ui.renderQuickPopover(), `agy-quick-tab-${tabKey}`).props.onClick();
+    const pop = ui.find(ui.renderQuickPopover(), 'agy-quick-popover');
+    assert.ok(ui.find(pop, expectedTestId), `Expected ${expectedTestId} inside QuickPopover tab ${tabKey}`);
+    const tabText = ui.collectText(pop);
+    for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+      assert.equal(tabText.includes(forbidden), false, `Forbidden middle dot in tab ${tabKey}`);
+    }
+  }
+
+  // Manual refresh + open full page remembers active tab ('settings')
+  await ui.find(ui.renderQuickPopover(), 'agy-quick-refresh').props.onClick();
+  assert.deepEqual(dashboardLoads, [false, true]);
+  ui.find(ui.renderQuickPopover(), 'agy-quick-open-full').props.onClick();
+  assert.deepEqual(openedTabs, ['settings']);
+  assert.equal(ui.find(ui.renderQuickPopover(), 'agy-quick-popover'), null);
+
+  // Reopen restores last tab ('settings')
+  ui.find(ui.renderQuickPopover(), 'agy-titlebar-quick-trigger').props.onClick();
+  assert.ok(ui.find(ui.renderQuickPopover(), 'agy-about-version'));
+
+  // Disabled toggle renders null
+  const offUi = createPanelHarness(accountsData, { enabled: true, titlebarQuickPanel: false });
+  assert.equal(offUi.renderQuickPopover(), null);
 });

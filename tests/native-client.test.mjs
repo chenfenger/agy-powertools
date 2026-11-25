@@ -14,6 +14,44 @@ test('execution snapshot reads native lifecycle only for the requested conversat
   snapshot={...snapshot,turns:[]};assert.equal(context.__agyNativeAdapter.executionState('current'),null);
 });
 
+test('executionState surfaces SYSTEM_MESSAGE wakeup origin, notFullyIdle, and active subagents',()=>{
+  const summaries={
+    main:{notFullyIdle:true},
+    'sub-1':{parentConversationId:'main',status:2,trajectoryMetadata:{subagentSpec:{role:'UI Verification'}}},
+    'sub-done':{parentConversationId:'main',status:1,trajectoryMetadata:{subagentSpec:{role:'Finished Check'}}}
+  };
+  const reduxStore={getState:()=>({trajectorySummaries:{summaries}}),dispatch(){}};
+  const snapshot={
+    conversationId:'main',status:1,
+    turns:[{startStepIndex:10},{startStepIndex:12}],
+    executorMetadata:{terminationReason:4},
+    trajectorySlice:{
+      stepsSlice:{startIndex:10},
+      stepsInSlice:[
+        {step:{case:'userInput',value:{}}},
+        {step:{case:'plannerResponse',value:{response:'Working'}}},
+        {step:{case:'systemMessage',value:{}}},
+        {step:{case:'plannerResponse',value:{response:'Dispatched'}}}
+      ]
+    }
+  };
+  const element={
+    '__reactFiber$fixture':{
+      tag:10,type:{},memoizedProps:{value:{store:reduxStore}},
+      return:{tag:10,type:{},memoizedProps:{value:{cascadeContext:{state:{agentStateProvider:{getState:()=>snapshot}}}}},return:null}
+    }
+  };
+  const context=vm.createContext({document:{querySelector:()=>element,querySelectorAll:()=>[element]}});
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  const ex=JSON.parse(JSON.stringify(context.__agyNativeAdapter.executionState('main')));
+  assert.equal(ex.status,1);
+  assert.equal(ex.turnStartStepIndex,12);
+  assert.equal(ex.userTurnStartStepIndex,10);
+  assert.equal(ex.isSystemTurn,true);
+  assert.equal(ex.notFullyIdle,true);
+  assert.deepEqual(ex.activeSubagents,[{title:'UI Verification',status:'running'}]);
+});
+
 test('master switch restores renamed native hooks and reuses saved enhancements on enable',()=>{
   const original={checkpointConfig:{enabled:true},plannerConfig:{noToolExplanation:true}};
   const nativeResolve=()=>original,nativeSegment=()=>({body:{type:'collapsible'}}),send=payload=>payload;

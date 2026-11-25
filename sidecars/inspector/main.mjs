@@ -6,7 +6,7 @@ import { startNativeIntegration } from '../../lib/native-host.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
-import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybePromptPostUpdateRelaunch, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybeAutoRelaunchMac, maybePromptPostUpdateRelaunch, recordDebugPortReady, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
 import { checkForUpdates } from '../../lib/updates.mjs';
 import { startUpdate, updateStatus } from '../../lib/update-manager.mjs';
@@ -23,6 +23,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     onDebugPortReady() {
       everConnectedDebugPort = true;
       missingPortPolls = 0;
+      try { recordDebugPortReady({ dataDir: paths.data }); } catch {}
     },
     onMissingDebugPort() {
       if (remoteSsh || everConnectedDebugPort) return;
@@ -34,6 +35,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       if (missingPortPolls >= 2) {
         const current = settings.get();
         if (current.enabled !== false) {
+          if (process.platform === 'darwin' && current.macAutoRelaunch !== false) {
+            const autoRes = maybeAutoRelaunchMac({
+              dataDir: paths.data,
+              home: paths.home,
+              enabled: current.enabled !== false,
+              macAutoRelaunch: current.macAutoRelaunch !== false
+            });
+            if (autoRes.relaunched || autoRes.reason === 'already-attempted-session' || autoRes.reason === 'cooldown') return;
+          }
           maybePromptPostUpdateRelaunch({
             dataDir: paths.data,
             installDir: paths.installed,
@@ -58,13 +68,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         enabled: current.enabled !== false,
         language: current.language || 'zh-CN',
         platform: process.platform,
-        macLauncherApp: process.platform === 'darwin' ? join(paths.home, 'Applications', 'Antigravity (Powertools).app') : '',
+        macAutoRelaunch: current.macAutoRelaunch !== false,
         mode: remoteSsh ? 'ssh-remote' : 'local',
         manualCommand: remoteSsh ? '' : manualLaunchCommand({ home: paths.home }),
         update: updateStatus()
       };
     },
     onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home }),
+    onSetSettings: patch => settings.set(patch),
     onCheckUpdate: () => checkForUpdates({ currentVersion: version }),
     onInstallUpdate: ({ version: expectedVersion } = {}) => startUpdate({ currentVersion: version, expectedVersion }),
     onUpdateStatus: () => updateStatus()

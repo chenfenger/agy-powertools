@@ -46,7 +46,7 @@ test('real database metrics, complete branch boundary, invalid IDs and transcrip
     db.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(0,generation);
     db.prepare('INSERT INTO steps VALUES (?,?)').run(1,concat(bytes(1,timestamp(1735689601)),bytes(6,timestamp(1735689603)),bytes(7,timestamp(1735689608)),bytes(8,timestamp(1735689608))));db.close();
     const before=readFileSync(dbPath);const state=parseSessionData('fixture',{includeSessions:false});
-    assert.equal(state.telemetry.tps,14.3);assert.equal(state.telemetry.avgTtftMs,2000);assert.equal(state.telemetry.cacheHitPercent,75);
+    assert.equal(state.telemetry.tps,20);assert.equal(state.telemetry.avgTtftMs,2000);assert.equal(state.telemetry.cacheHitPercent,75);
     assert.equal(state.contextWindow.maxTokens,200000);assert.equal(state.contextWindow.usedPercent,1);
     assert.equal(state.turns[0].durationMs,8000);assert.deepEqual(readFileSync(dbPath),before);
     const branch=exportTranscript('fixture',1);

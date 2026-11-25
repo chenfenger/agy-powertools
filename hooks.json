@@ -1,6 +1,6 @@
 {
   "agy-powertools-telemetry": {
-    "enabled": true,
+    "enabled": false,
     "PreInvocation": [
       {
         "type": "command",

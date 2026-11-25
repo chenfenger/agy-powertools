@@ -102,3 +102,93 @@ test('progress reports detailed live phase for retrying, tool execution, thinkin
     assert.equal(pLiveRetry.retrySummary.code,'unavailable');
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('resolveTurnExecution accepts SYSTEM_MESSAGE wakeups and keeps yielded turns running for active subagents or background tasks',()=>{
+  const turn={stepIndexStart:10,status:'complete',completedAtMs:5000};
+  const diskSteps=[{step_index:10,type:'USER_INPUT'},{step_index:42,type:'SYSTEM_MESSAGE'}];
+
+  // Reactive SYSTEM_MESSAGE wakeup verified via client metadata (even before disk flush)
+  const wokenByClient=resolveTurnExecution(turn,{conversationId:'c1',turnStartStepIndex:42,userTurnStartStepIndex:10,isSystemTurn:true,status:2,terminationReason:4},'c1');
+  assert.equal(wokenByClient.status,'running');
+  assert.equal(wokenByClient.completedAtMs,null);
+
+  // Reactive SYSTEM_MESSAGE wakeup verified via disk steps (even if slice scrolled past turn start)
+  const wokenByDisk=resolveTurnExecution(turn,{conversationId:'c1',turnStartStepIndex:42,status:2,terminationReason:4},'c1',diskSteps);
+  assert.equal(wokenByDisk.status,'running');
+  assert.equal(wokenByDisk.completedAtMs,null);
+
+  // Older native turnStartStepIndex and unflushed newer USER_INPUT turns are still rejected
+  assert.equal(resolveTurnExecution(turn,{conversationId:'c1',turnStartStepIndex:9,status:2,terminationReason:4},'c1',diskSteps),turn);
+  assert.equal(resolveTurnExecution(turn,{conversationId:'c1',turnStartStepIndex:99,status:2,terminationReason:4},'c1',diskSteps),turn);
+  assert.equal(resolveTurnExecution(turn,{conversationId:'c1',turnStartStepIndex:102,userTurnStartStepIndex:99,isSystemTurn:true,status:2,terminationReason:4},'c1',diskSteps),turn);
+
+  // Main turn yielded (status=1, terminationReason=4) while a child subagent is running
+  const yieldedSubagent=resolveTurnExecution(turn,{
+    conversationId:'c1',turnStartStepIndex:42,isSystemTurn:true,status:1,terminationReason:4,
+    notFullyIdle:true,activeSubagents:[{title:'UI Verification',status:'running'}]
+  },'c1',diskSteps);
+  assert.equal(yieldedSubagent.status,'running');
+  assert.equal(yieldedSubagent.completedAtMs,null);
+
+  // Main turn yielded while a non-daemon background task keeps notFullyIdle=true
+  const yieldedBackground=resolveTurnExecution(turn,{
+    conversationId:'c1',turnStartStepIndex:10,status:1,terminationReason:4,
+    notFullyIdle:true
+  },'c1');
+  assert.equal(yieldedBackground.status,'running');
+  assert.equal(yieldedBackground.completedAtMs,null);
+
+  // Daemon-only background task (notFullyIdle=false, no active subagents) still resolves complete
+  const daemonOnly=resolveTurnExecution({...turn,status:'running',completedAtMs:null},{
+    conversationId:'c1',turnStartStepIndex:10,status:1,terminationReason:4,
+    notFullyIdle:false
+  },'c1');
+  assert.equal(daemonOnly.status,'complete');
+
+  // Explicit user stop and fatal error still take precedence over active children
+  assert.equal(resolveTurnExecution(turn,{
+    conversationId:'c1',turnStartStepIndex:42,isSystemTurn:true,status:1,terminationReason:2,
+    notFullyIdle:true,activeSubagents:[{title:'UI Verification',status:'running'}]
+  },'c1',diskSteps).status,'stopped');
+  assert.equal(resolveTurnExecution(turn,{
+    conversationId:'c1',turnStartStepIndex:42,isSystemTurn:true,status:1,terminationReason:1,
+    notFullyIdle:true,activeSubagents:[{title:'UI Verification',status:'running'}]
+  },'c1',diskSteps).status,'error');
+});
+
+test('readProgress reports subagent, background, and woken live phases accurately',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'agy-progress-subagent-'));
+  try{
+    const runningTurn={stepIndexStart:10,status:'running',startedAtMs:1000,toolCalls:[]};
+    const steps=[{step_index:10,type:'USER_INPUT'},{step_index:42,type:'SYSTEM_MESSAGE'}];
+
+    const pSingle=readProgress(dir,'c1',[runningTurn],steps,9000,null,{
+      conversationId:'c1',turnStartStepIndex:42,status:1,terminationReason:4,
+      notFullyIdle:true,activeSubagents:[{title:'UI Verification',status:'running'}]
+    });
+    assert.equal(pSingle.phase,'subagent');
+    assert.equal(pSingle.activeSubagentCount,1);
+    assert.equal(pSingle.phaseDetail,'UI Verification');
+
+    const pMulti=readProgress(dir,'c1',[runningTurn],steps,9000,null,{
+      conversationId:'c1',turnStartStepIndex:42,status:1,terminationReason:4,
+      notFullyIdle:true,activeSubagents:[{title:'Agent A',status:'running'},{title:'Agent B',status:'running'}]
+    });
+    assert.equal(pMulti.phase,'subagent');
+    assert.equal(pMulti.activeSubagentCount,2);
+    assert.equal(pMulti.phaseDetail,'2');
+
+    const pBg=readProgress(dir,'c1',[runningTurn],steps,9000,null,{
+      conversationId:'c1',turnStartStepIndex:42,status:1,terminationReason:4,
+      notFullyIdle:true
+    });
+    assert.equal(pBg.phase,'background');
+    assert.equal(pBg.activeSubagentCount,0);
+
+    const pWokenLive=readProgress(dir,'c1',[runningTurn],steps,9000,null,{
+      conversationId:'c1',turnStartStepIndex:42,status:2,terminationReason:4,
+      live:{waiting:false,lastCase:'plannerResponse',lastStatus:2,hasThinking:true,hasResponse:true,toolCallCount:0,toolName:''}
+    });
+    assert.equal(pWokenLive.phase,'streaming');
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
