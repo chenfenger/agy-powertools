@@ -47,3 +47,27 @@ test('modelContexts tracks Orchestrator planner and execution models, short name
  assert.equal(sparseOrch.models[0].role,'planner');assert.equal(sparseOrch.models[0].shortName,'Orchestrator');assert.equal(sparseOrch.models[0].isCurrent,true);
  assert.equal(sparseOrch.models[1].role,'execution');assert.equal(sparseOrch.models[1].shortName,'Hydrogen');assert.equal(sparseOrch.models[1].isCurrent,false);
 });
+
+
+test('contextSnapshot immediately reflects post-compaction estimate when a completed CHECKPOINT step follows the latest generation (Issue #48)', () => {
+  const gen = { stepIndices: [100, 101], providerInputTokens: 780000, context: { usedTokens: 775000, maxTokens: 786432, categories } };
+  const c = contextSnapshot(gen, 0, { stepIndex: 105, summaryTokens: 6200 });
+  assert.equal(c.compactedPending, true);
+  assert.equal(c.source, 'post-compact-estimate');
+  assert.equal(c.preCompactUsedTokens, 780000);
+  assert.equal(c.preCompactPercent, 99.2);
+  // Fixed categories (Tools 7336 + System Prompt 8702 + Skills 3678 = 19716) + summary 6200 = 25916 (~3.3%)
+  assert.equal(c.usedTokens, 25916);
+  assert.equal(c.usedPercent, 3.3);
+  assert.equal(c.categories.reduce((n, g) => n + g.tokens, 0), 786432);
+  const mc = modelContexts([{ ...gen, modelName: 'Gemini 4 Carbon (High)' }], [105], c);
+  assert.equal(mc.models[0].usedTokens, 25916);
+  assert.equal(mc.models[0].usedPercent, 3.3);
+
+  // Once a newer generation exists after the checkpoint, normal provider-usage resumes
+  const nextGen = { stepIndices: [106, 107], providerInputTokens: 29170, context: { usedTokens: 31000, maxTokens: 786432, categories } };
+  const after = contextSnapshot(nextGen, 0, { stepIndex: 105, summaryTokens: 6200 });
+  assert.equal(after.compactedPending, false);
+  assert.equal(after.source, 'provider-usage');
+  assert.equal(after.usedTokens, 29170);
+});

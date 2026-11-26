@@ -273,6 +273,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     Intl,
     URL,
     window: { addEventListener() {}, removeEventListener() {} },
+    location: { pathname: '/' },
     document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } },
     setInterval: hooks.setInterval || (() => 1),
     clearInterval: hooks.clearInterval || (() => {}),
@@ -284,6 +285,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     k0: 'disclosure',
     dq: ({ name }) => ({ type: 'icon', props: { name }, children: [] }),
     Sy: 'tooltip',
+    navigator: hooks.navigator ?? { clipboard: { writeText: async text => { hooks.onClipboardWrite?.(text); } } },
     HC: 'popover',
     IC: 'popover-trigger',
     JC: 'popover-content',
@@ -324,7 +326,19 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
       hooks.onRefreshQuotas?.(id);
       return hooks.refreshAccountQuotasImpl ? hooks.refreshAccountQuotasImpl(id) : Promise.resolve({ ok: true });
     },
-    refreshAccountCredentials: id => { hooks.onRefreshCredentials?.(id); return Promise.resolve({ ok: true }); }
+    refreshAccountCredentials: id => { hooks.onRefreshCredentials?.(id); return Promise.resolve({ ok: true }); },
+    switchAccount: id => (hooks.switchAccountImpl ? hooks.switchAccountImpl(id) : Promise.resolve({ ok: true })),
+    startAddAccount: alias => (hooks.startAddAccountImpl ? hooks.startAddAccountImpl(alias) : Promise.resolve({ ok: true })),
+    loginSession: () => (hooks.loginSession ? hooks.loginSession() : { active: false, authUrl: '', mode: 'none' }),
+    onLoginSessionChange: cb => (hooks.onLoginSessionChange ? hooks.onLoginSessionChange(cb) : () => {}),
+    cancelAccountLogin: () => hooks.onCancelAccountLogin?.(),
+    updateNotice: () => (typeof hooks.updateNotice === 'function' ? hooks.updateNotice() : (hooks.updateNotice ?? null)),
+    updateInstallState: () => (hooks.updateInstallState ?? { status: 'idle' }),
+    consumeExpandUpdateNotes: () => Boolean(hooks.expandUpdateNotes),
+    consumeScrollToAbout: () => Boolean(hooks.scrollToAbout),
+    openUpdateSettings: () => hooks.onOpenUpdateSettings?.(),
+    syncUpdateResult: res => hooks.onSyncUpdateResult?.(res),
+    isTurnRunning: () => Boolean(hooks.isTurnRunning?.())
   });
   function renderChild(node) {
     const prevComp = activeComponent;
@@ -377,7 +391,10 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     renderQuickPopover: () => { activeComponent = 'quick-popover'; hookIdx = 0; return panels.QuickPopover(); },
     renderOverviewQuota: () => { activeComponent = 'overview-quota'; hookIdx = 0; return panels.OverviewQuota(); },
     renderQuotas: () => { activeComponent = 'quotas'; hookIdx = 0; return panels.Quotas(); },
+    renderPricing: dashboard => { activeComponent = 'pricing'; hookIdx = 0; return panels.Pricing({ dashboard }); },
     renderSettings: () => { activeComponent = 'settings'; hookIdx = 0; return panels.Settings(); },
+    renderSidebar: () => { activeComponent = 'sidebar'; hookIdx = 0; return panels.Sidebar(); },
+    renderAbout: () => { activeComponent = 'about'; hookIdx = 0; return panels.About(); },
     collectText,
     find,
     findAll
@@ -1514,4 +1531,402 @@ test('QuickPopover reuses full panels across all 6 tabs with lazy loading, badge
   // Disabled toggle renders null
   const offUi = createPanelHarness(accountsData, { enabled: true, titlebarQuickPanel: false });
   assert.equal(offUi.renderQuickPopover(), null);
+});
+
+test('Pricing provides standard vs API promo basis switch, clean single-row rates, promo expiry badge, and Overview/Settings integration without middle dots', () => {
+  const changes = [];
+  const futureUntil = '2099-12-01';
+  const sampleDash = {
+    pricing: {
+      mode: 'standard',
+      status: 'live',
+      checkedAt: '2026-11-24T10:00:00Z',
+      rates: [
+        { model: 'gemini-4-carbon', input: 2, output: 10, cache: 0.1, until: futureUntil, next: { input: 4, output: 20, cache: 0.2 }, source: 'https://aistudio.google.com/docs/pricing' },
+        { model: 'gemini-4-neon', input: 3, output: 15, cache: 0.15, source: 'https://aistudio.google.com/docs/pricing' }
+      ]
+    },
+    requests: [
+      { id: 'r1', model: 'Gemini 4 Carbon (High)', status: 'success', timestampMs: Date.now() - 1000, inputTokens: 1000, cacheReadTokens: 0, outputTokens: 500, costUsd: 0.014 }
+    ],
+    errors: []
+  };
+  const ui = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', name: 'Alice Chen', tier: { id: 'g1-ultra-tier', name: 'Google AI Ultra 20x' }, groups: [] }] },
+    { enabled: true, language: 'zh-CN', pricingMode: 'standard', overviewRange: '24h' },
+    { onChange: patch => changes.push(patch) }
+  );
+
+  // 1. Default standard mode: clean toolbar without bloated context banner, single-line standard prices ($4/$20/$0.2), no promo tag noise
+  let priceTree = ui.renderPricing(sampleDash);
+  assert.equal(ui.find(priceTree, 'agy-price-context'), null);
+  assert.equal(ui.find(priceTree, 'agy-pricing-mode-standard')?.props?.['aria-pressed'], true);
+  assert.equal(ui.find(priceTree, 'agy-pricing-mode-promo')?.props?.['aria-pressed'], false);
+
+  const carbonRow = ui.findAll(priceTree, n => n.type === 'tr' && n.props?.['data-model'] === 'gemini-4-carbon')[0];
+  const neonRow = ui.findAll(priceTree, n => n.type === 'tr' && n.props?.['data-model'] === 'gemini-4-neon')[0];
+  assert.ok(carbonRow && neonRow);
+  const carbonText = ui.collectText(carbonRow);
+  assert.equal(ui.find(carbonRow, 'agy-price-promo-tag'), null);
+  assert.equal(carbonText.includes('API 优惠至'), false);
+  assert.ok(carbonText.includes('$4'));
+  assert.ok(carbonText.includes('$20'));
+  assert.equal(carbonText.includes('API 优惠 $2'), false);
+  assert.equal(ui.find(carbonRow, 'agy-price-alt'), null);
+  assert.equal(ui.find(neonRow, 'agy-price-promo-tag'), null);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(ui.collectText(priceTree).includes(forbidden), false);
+  }
+
+  // 2. Overview & Settings reflect standard basis (with data-pt-tip theme tooltip)
+  const ovStd = ui.renderOverview(sampleDash);
+  assert.equal(ui.collectText(ui.find(ovStd, 'agy-overview-cost-basis')), 'API 正式标准价估值');
+  const reqStd = ui.renderEventTable(sampleDash, false);
+  const costTh = ui.findAll(reqStd, n => n.type === 'th' && n.props?.className?.includes('pt-cost-th'))[0];
+  assert.ok(costTh?.props?.['data-pt-tip']?.includes('正式标准单价'));
+  const settingsTree = ui.renderSettings();
+  assert.ok(ui.find(settingsTree, 'agy-setting-row-pricingMode'));
+  assert.equal(ui.find(settingsTree, 'agy-pricing-mode-select-standard')?.props?.selected, true);
+  assert.ok(ui.collectText(ui.find(settingsTree, 'agy-pricing-mode-select')).includes('正式标准价'));
+
+  // 3. Switch to promo mode via segmented control: shows $2/$10/$0.1 single-row values and active expiry tag
+  ui.find(priceTree, 'agy-pricing-mode-promo').props.onClick();
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].pricingMode, 'promo');
+  priceTree = ui.renderPricing({ ...sampleDash, pricing: { ...sampleDash.pricing, mode: 'promo' } });
+  assert.equal(ui.find(priceTree, 'agy-pricing-mode-promo')?.props?.['aria-pressed'], true);
+  const promoCarbonRow = ui.findAll(priceTree, n => n.type === 'tr' && n.props?.['data-model'] === 'gemini-4-carbon')[0];
+  const promoTag = ui.find(promoCarbonRow, 'agy-price-promo-tag');
+  assert.equal(promoTag?.props?.['data-active'], 'true');
+  const promoText = ui.collectText(promoCarbonRow);
+  assert.ok(promoText.includes('API 优惠至 2099-11-30'));
+  assert.ok(promoText.includes('$2'));
+  assert.ok(promoText.includes('$10'));
+  assert.equal(promoText.includes('正式 $4'), false);
+  assert.equal(ui.collectText(ui.find(ui.renderOverview(sampleDash), 'agy-overview-cost-basis')), '含 API 首发优惠口径');
+
+  // 4. English locale in promo mode shows clean expiry badge with zero middle dots (and hides it in standard mode)
+  const enUi = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', tier: { id: 'g1-pro-tier', name: 'Google AI Pro' }, groups: [] }] },
+    { enabled: true, language: 'en', pricingMode: 'promo' }
+  );
+  const enTree = enUi.renderPricing({ ...sampleDash, pricing: { ...sampleDash.pricing, mode: 'promo' } });
+  const enText = enUi.collectText(enTree);
+  assert.ok(enText.includes('API promo thru 2099-11-30'));
+  assert.equal(enText.includes('API promo $2'), false);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(enText.includes(forbidden), false);
+  }
+});
+
+test('Overview and EventTable do not hide remote SSH or unattributed requests behind an empty activeAccountEmail filter (Issue #49)', () => {
+  const now = Date.now();
+  const remoteDash = {
+    isRemoteSsh: true,
+    activeAccountEmail: 'alice@example.com',
+    accountEmails: [],
+    requests: [
+      { id: 'r1', model: 'Gemini 4 Carbon (High)', status: 'success', timestampMs: now - 30000, inputTokens: 12000, cacheReadTokens: 0, outputTokens: 1500, costUsd: 0.078, accountEmail: '' },
+      { id: 'r2', model: 'Gemini 4 Carbon (High)', status: 'success', timestampMs: now - 10000, inputTokens: 8000, cacheReadTokens: 0, outputTokens: 1000, costUsd: 0.052, accountEmail: '' }
+    ],
+    errors: []
+  };
+  const ui = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', tier: { id: 'g1-pro-tier', name: 'Google AI Pro' }, groups: [] }] },
+    { enabled: true, language: 'zh-CN', multiAccount: true, overviewRange: 'weeklyQuota' }
+  );
+  const ovTree = ui.renderOverview(remoteDash);
+  // Filter hidden on SSH remote dashboard and both requests are counted instead of showing 0
+  assert.equal(ui.find(ovTree, 'agy-overview-account-filter'), null);
+  const ovText = ui.collectText(ovTree);
+  assert.ok(ovText.includes('2 成功'));
+  assert.ok(ovText.includes('$0.13'));
+
+  // Local multi-account with only unattributed history (hasActiveRows=false) also falls back to 'all' instead of empty 0s
+  const localUnattributed = { ...remoteDash, isRemoteSsh: false };
+  const localOv = ui.renderOverview(localUnattributed);
+  assert.ok(ui.find(localOv, 'agy-overview-account-filter'));
+  assert.ok(ui.collectText(localOv).includes('2 成功'));
+});
+
+
+test('accountSupportsModel blocks incompatible Free/model accounts and rankAutoSwitchCandidates prefers active weekly timers over untouched 100% accounts', async () => {
+  const { accountSupportsModel, rankAutoSwitchCandidates } = await import('../lib/account-helpers.mjs');
+  const now = 1_700_000_000_000;
+  const freeAcct = {
+    id: 'free-1', email: 'free@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-free-tier', name: 'Free' },
+    groups: [{ displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }, { window: 'weekly', remainingFraction: 1, resetTimeMs: null }] }]
+  };
+  const proUntouched = {
+    id: 'pro-fresh', email: 'fresh@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+    availableModels: ['Gemini 4 Carbon (High)', 'Claude Opus 5.5'],
+    groups: [
+      { displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }, { window: 'weekly', remainingFraction: 1, resetTimeMs: null }] },
+      { displayName: 'Claude and GPT models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }, { window: 'weekly', remainingFraction: 1, resetTimeMs: null }] }
+    ]
+  };
+  const proTicking = {
+    id: 'pro-ticking', email: 'ticking@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+    availableModels: ['Gemini 4 Carbon (High)', 'Claude Opus 5.5'],
+    groups: [
+      { displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 0.7, resetTimeMs: now + 3600_000 }, { window: 'weekly', remainingFraction: 0.6, resetTimeMs: now + 3 * 86400_000 }] },
+      { displayName: 'Claude and GPT models', buckets: [{ window: '5h', remainingFraction: 0.7, resetTimeMs: now + 3600_000 }, { window: 'weekly', remainingFraction: 0.6, resetTimeMs: now + 3 * 86400_000 }] }
+    ]
+  };
+  const noClaude = {
+    id: 'gemini-only', email: 'gonly@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+    availableModels: ['Gemini 4 Carbon (High)'],
+    groups: [{ displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }] }]
+  };
+
+  assert.equal(accountSupportsModel(freeAcct, 'Claude Opus 5.5', 'claude'), false);
+  assert.equal(accountSupportsModel(freeAcct, 'Orchestrator (Claude Opus 5.5)', 'claude'), false);
+  assert.equal(accountSupportsModel(freeAcct, 'Gemini 4 Carbon (High)', 'gemini'), false);
+  assert.equal(accountSupportsModel(noClaude, 'Claude Opus 5.5', 'claude'), false);
+  assert.equal(accountSupportsModel(proTicking, 'Orchestrator (Claude Opus 5.5)', 'claude'), true);
+
+  // Ranking prefers pro-ticking (active weekly timer, 60% remaining) over pro-fresh (untouched 100%) and excludes freeAcct/noClaude
+  const ranked = rankAutoSwitchCandidates([freeAcct, noClaude, proUntouched, proTicking], 'active', 'claude', now, 0.05, { activeModel: 'Claude Opus 5.5' });
+  assert.deepEqual(ranked.map(r => r.acct.id), ['pro-ticking', 'pro-fresh']);
+});
+
+test('SwitchConfirmModal clarifies cross-tab running turns and AccountSwitcher surfaces manualRestartRequired notice without middle dots', async () => {
+  const accountsData = {
+    activeId: 'acct-a',
+    vaultSupported: true,
+    accounts: [
+      { id: 'acct-a', email: 'alpha@example.com', name: 'Alpha', hasCredential: true, disabled: false, groups: [] },
+      { id: 'acct-b', email: 'beta@example.com', name: 'Beta', hasCredential: true, disabled: false, groups: [] }
+    ]
+  };
+  const ui = createPanelHarness(accountsData, { enabled: true, multiAccount: true, language: 'zh-CN' }, {
+    isTurnRunning: () => true,
+    switchAccountImpl: async () => ({ ok: true, relaunching: false, manualRestartRequired: true })
+  });
+
+  // 1. Open AccountSwitcher popover & click non-active account -> SwitchConfirmModal warns accurately about active or background turns
+  let swTree = ui.renderSwitcher();
+  const trigger = ui.find(swTree, 'agy-account-switcher-trigger');
+  assert.ok(trigger);
+  trigger.props.onClick?.();
+  swTree = ui.renderSwitcher();
+  const rowB = ui.find(swTree, 'agy-account-row-acct-b');
+  assert.ok(rowB);
+  rowB.props.onClick();
+  swTree = ui.renderSwitcher();
+  const warn = ui.find(swTree, 'agy-switch-running-warning');
+  assert.ok(warn);
+  const warnText = ui.collectText(warn);
+  assert.ok(warnText.includes('当前或后台仍有会话正在执行'));
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(warnText.includes(forbidden), false);
+  }
+
+  // 2. Confirm switch returning manualRestartRequired -> AccountSwitcher displays visible notice inside popover
+  const confirmBtn = ui.find(swTree, 'agy-switch-confirm');
+  assert.ok(confirmBtn);
+  confirmBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+  swTree = ui.renderSwitcher();
+  const notice = ui.find(swTree, 'agy-popover-manual-restart');
+  assert.ok(notice);
+  assert.ok(ui.collectText(notice).includes('手动重启 Antigravity'));
+});
+
+test('AddAccountModal exposes copyable OAuth login link while sign-in is active and supports cancel (Issue #56)', async () => {
+  const oauthUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=agy&state=xyz';
+  let resolveLogin = null;
+  let cancelled = 0;
+  const copied = [];
+  const accountsData = {
+    activeId: 'acct-a',
+    vaultSupported: true,
+    accounts: [{ id: 'acct-a', email: 'alpha@example.com', name: 'Alpha', hasCredential: true, disabled: false, groups: [] }]
+  };
+  const ui = createPanelHarness(accountsData, { enabled: true, multiAccount: true, language: 'zh-CN' }, {
+    loginSession: () => ({ active: true, authUrl: oauthUrl, mode: 'redirect' }),
+    onCancelAccountLogin: () => { cancelled++; resolveLogin?.({ ok: false, cancelled: true }); },
+    onClipboardWrite: text => copied.push(text),
+    startAddAccountImpl: () => new Promise(resolve => { resolveLogin = resolve; })
+  });
+
+  // Open AddAccountModal from Quotas page and start sign-in
+  let qTree = ui.renderQuotas();
+  ui.find(qTree, 'agy-add-account').props.onClick();
+  qTree = ui.renderQuotas();
+  const dialog = ui.find(qTree, 'agy-add-account-dialog');
+  assert.ok(dialog);
+  const form = ui.findAll(dialog, n => n.type === 'form')[0];
+  form.props.onSubmit({ preventDefault() {} });
+
+  // While busy, OAuth URL box & Copy button render cleanly and copy exact raw URL
+  qTree = ui.renderQuotas();
+  const oauthBox = ui.find(qTree, 'agy-add-account-oauth-box');
+  assert.ok(oauthBox);
+  assert.equal(ui.collectText(ui.find(oauthBox, 'agy-add-account-oauth-url')), oauthUrl);
+  const copyBtn = ui.find(oauthBox, 'agy-add-account-copy-url');
+  assert.ok(copyBtn);
+  copyBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(copied, [oauthUrl]);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(ui.collectText(oauthBox).includes(forbidden), false);
+  }
+
+  // Cancel button cancels active login session cleanly
+  const cancelBtn = ui.find(qTree, 'agy-add-account-cancel');
+  assert.equal(cancelBtn.props.disabled, false);
+  cancelBtn.props.onClick();
+  assert.equal(cancelled, 1);
+});
+
+test('AccountSwitcher and Quotas isolate SSH remote windows and prefer live capabilities email over stale activeId (Issue #57)', () => {
+  // 1. SSH remote store: AccountSwitcher returns null, Quotas shows SSH notice and hides local accounts list
+  const sshUi = createPanelHarness(
+    { isRemoteSsh: true, activeId: '', accounts: [], vaultSupported: false },
+    { enabled: true, multiAccount: true, accountSwitcher: true, language: 'zh-CN' },
+    { capabilities: { email: 'remote@example.com', name: 'Remote Dev', plan: 'Google AI Pro', planId: 'g1-pro-tier' } }
+  );
+  assert.equal(sshUi.renderSwitcher(), null);
+  const sshQuotas = sshUi.renderQuotas();
+  assert.ok(sshUi.find(sshQuotas, 'agy-accounts-ssh-notice'));
+  assert.equal(sshUi.find(sshQuotas, 'agy-accounts-overview'), null);
+  assert.ok(sshUi.collectText(sshQuotas).includes('remote@example.com'));
+
+  // 2. Local store: AccountSwitcher prefers live cap.email when store.activeId lags behind
+  const localUi = createPanelHarness(
+    {
+      activeId: 'acct-old',
+      accounts: [
+        { id: 'acct-old', email: 'old@example.com', name: 'Old Local', groups: [] },
+        { id: 'acct-live', email: 'live@example.com', name: 'Live Window', groups: [] }
+      ]
+    },
+    { enabled: true, multiAccount: true, accountSwitcher: true, language: 'zh-CN' },
+    { capabilities: { email: 'live@example.com', name: 'Live Window' } }
+  );
+  const swTree = localUi.renderSwitcher();
+  const triggerText = localUi.collectText(localUi.find(swTree, 'agy-account-switcher-trigger'));
+  assert.ok(triggerText.includes('Live Window'));
+  assert.ok(triggerText.includes('live@example.com'));
+});
+
+test('createAccountsStore tracks onboarding acceptance from app_storage.json and passes onboardingSync only for accepted accounts (Issue #59)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-onboarding-59-'));
+  try {
+    const appStoragePath = join(dir, 'app_storage.json');
+    const vault = createFakeVault({ 'gemini:antigravity': 'tok-alpha' });
+    const relaunchCalls = [];
+    const store = createAccountsStore(dir, {
+      vault,
+      appStoragePath,
+      relaunch: opts => { relaunchCalls.push(opts || null); return { scheduled: true }; }
+    });
+
+    // Account A has accepted onboarding in app_storage.json with isGcpTos = false
+    writeFileSync(appStoragePath, JSON.stringify({
+      'agy.onboarding.lastLoginUsername': 'alpha@example.com',
+      'agy.onboarding.lastLoginIsGcpTos': 'false'
+    }));
+    const s1 = store.syncActive({ email: 'alpha@example.com', name: 'Alpha', groups: [{ displayName: 'Gemini', buckets: [] }] });
+    assert.equal(s1.accounts[0].onboardingAccepted, true);
+    assert.equal(s1.accounts[0].isGcpTos, false);
+
+    // Prepare add and completeAdd for brand-new account B (not yet accepted in app_storage.json)
+    const prep = store.prepareAdd({ pendingAlias: 'NewB' });
+    vault.slots.set('gemini:antigravity', 'tok-beta');
+    const added = store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: prep.prevCredHash, triggerRelaunch: true });
+    assert.equal(added.accountChanged, true);
+    // Brand-new account must NOT suppress its first-time ToS dialog
+    assert.equal(relaunchCalls.at(-1), null);
+
+    // After user accepts ToS for B (isGcpTos = true) and enters main UI, syncActive captures B's onboarding state
+    writeFileSync(appStoragePath, JSON.stringify({
+      'agy.onboarding.lastLoginUsername': 'beta@example.com',
+      'agy.onboarding.lastLoginIsGcpTos': 'true'
+    }));
+    const s2 = store.syncActive({ email: 'beta@example.com', name: 'Beta', groups: [{ displayName: 'Gemini', buckets: [] }] });
+    const acctA = s2.accounts.find(a => a.email === 'alpha@example.com');
+    const acctB = s2.accounts.find(a => a.email === 'beta@example.com');
+    assert.equal(acctB.onboardingAccepted, true);
+    assert.equal(acctB.isGcpTos, true);
+
+    // Switching from B -> A passes A's saved onboardingSync (isGcpTos: false)
+    store.switchAccount(acctA.id, { triggerRelaunch: true });
+    assert.deepEqual(relaunchCalls.at(-1), { onboardingSync: { email: 'alpha@example.com', isGcpTos: false } });
+
+    // Simulate A active again and switch A -> B -> passes B's saved onboardingSync (isGcpTos: true)
+    writeFileSync(appStoragePath, JSON.stringify({ 'agy.onboarding.lastLoginUsername': 'alpha@example.com', 'agy.onboarding.lastLoginIsGcpTos': 'false' }));
+    store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    store.switchAccount(acctB.id, { triggerRelaunch: true });
+    assert.deepEqual(relaunchCalls.at(-1), { onboardingSync: { email: 'beta@example.com', isGcpTos: true } });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Sidebar badge, QuickPopover info dot, and About toggles reflect discovered updates cleanly without middle dots (Issue #45)', () => {
+  const changes = [];
+  let openedUpdateSettings = 0;
+  const ui = createPanelHarness(
+    { activeId: 'a1', accounts: [{ id: 'a1', email: 'alice@example.com', groups: [] }] },
+    { enabled: true, titlebarQuickPanel: true, autoCheckUpdates: true, autoInstallUpdates: false, language: 'zh-CN' },
+    {
+      onChange: p => changes.push(p),
+      onOpenUpdateSettings: () => openedUpdateSettings++,
+      updateNotice: {
+        status: 'available',
+        version: '2.17.0',
+        releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.17.0',
+        notes: '## 中文说明\n- **新功能**：自动检查更新',
+        canInstall: true,
+        dismissedVersion: ''
+      }
+    }
+  );
+  // 1. Sidebar displays compact update pill and clicking it jumps directly to Settings -> About
+  const sidebarTree = ui.renderSidebar();
+  const sideBadge = ui.find(sidebarTree, 'agy-sidebar-update-badge');
+  assert.ok(sideBadge);
+  assert.equal(ui.collectText(sideBadge), '新版');
+  let prevented = false, stopped = false;
+  sideBadge.props.onClick({ preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(openedUpdateSettings, 1);
+
+  // 2. QuickPopover displays calm info dot (no top-right callout banner) with update tooltip row
+  const qpTree = ui.renderQuickPopover();
+  const qpDot = ui.find(qpTree, 'agy-quick-trigger-badge');
+  assert.ok(qpDot);
+  assert.equal(qpDot.props['data-tone'], 'info');
+  assert.equal(ui.find(qpTree, 'agy-quick-alert-callout'), null);
+  assert.ok(ui.collectText(ui.find(qpTree, 'agy-quick-trigger-tooltip')).includes('发现新版本 v2.17.0'));
+
+  // 3. About pre-populates discovered release, install button, release notes, and update switches
+  const aboutTree = ui.renderAbout();
+  assert.ok(ui.find(aboutTree, 'agy-install-update'));
+  assert.ok(ui.collectText(ui.find(aboutTree, 'agy-install-update')).includes('更新至 v2.17.0'));
+  assert.ok(ui.find(aboutTree, 'agy-setting-autoCheckUpdates'));
+  assert.ok(ui.find(aboutTree, 'agy-setting-autoInstallUpdates'));
+  ui.find(aboutTree, 'agy-setting-autoInstallUpdates').props.onCheckedChange(true);
+  assert.deepEqual(changes.map(c => ({ ...c })), [{ autoInstallUpdates: true }]);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(ui.collectText(aboutTree).includes(forbidden), false);
+  }
+
+  // 4. Dismissed version hides Sidebar badge and QuickPopover info dot
+  const dismissedUi = createPanelHarness(
+    { activeId: 'a1', accounts: [{ id: 'a1', email: 'alice@example.com', groups: [] }] },
+    { enabled: true, titlebarQuickPanel: true, autoCheckUpdates: true, language: 'zh-CN' },
+    {
+      updateNotice: { status: 'available', version: '2.17.0', canInstall: true, dismissedVersion: '2.17.0' }
+    }
+  );
+  assert.equal(dismissedUi.find(dismissedUi.renderSidebar(), 'agy-sidebar-update-badge'), null);
+  assert.equal(dismissedUi.find(dismissedUi.renderQuickPopover(), 'agy-quick-trigger-badge'), null);
 });

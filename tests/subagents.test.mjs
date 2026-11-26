@@ -123,3 +123,121 @@ test('native-client subagents helper collects direct and nested subagents and cl
   assert.equal(adapter.openSubagent('sub-a'), true);
   assert.equal(clickedId, 'sub-a');
 });
+
+test('subagent stats sync prioritizes open composer, visible DOM nodes, and running workers beyond 32 subagents with incremental batching', async () => {
+  const uiCode = readFileSync(new URL('../lib/native-ui.js', import.meta.url), 'utf8');
+  const hostCode = readFileSync(new URL('../lib/native-host.mjs', import.meta.url), 'utf8');
+  const sshCode = readFileSync(new URL('../lib/ssh-remote.mjs', import.meta.url), 'utf8');
+  // Verify backend batch caps were lifted to 64
+  assert.equal(hostCode.includes('.slice(0, 64)'), true);
+  assert.equal(sshCode.includes('.slice(0, 64)'), true);
+
+  // Build 75 subagents where oldest 0..31 are done, 68..74 are newest (including running #70 and open composer #74)
+  const total = 75;
+  const subList = Array.from({ length: total }, (_, i) => ({
+    id: `sub-${String(i).padStart(3, '0')}`,
+    parentId: 'conv-root',
+    depth: 1,
+    typeName: 'swarm',
+    role: `Swarm Worker (worker-${i})`,
+    title: `Swarm Worker (worker-${i})`,
+    status: i === 70 ? 'running' : i >= 71 ? 'killed' : 'done',
+    stepCount: 10 + i,
+    createdAtMs: 1_700_000_000_000 + i * 1000,
+    lastModifiedAtMs: 1_700_000_000_000 + i * 1000
+  }));
+  const makeEl = () => ({ dataset: {}, style: { setProperty() {}, removeProperty() {} }, className: '', isConnected: true, remove() {}, append() {}, insertBefore() {}, querySelector: () => null, querySelectorAll: () => [] });
+  const domNodes = [subList[70], subList[71], subList[72], subList[73]].map(s => ({ ...makeEl(), dataset: { cascadeId: s.id }, textContent: s.title }));
+  const composerCards = [{
+    ...makeEl(),
+    __cascadeId: subList[74].id
+  }];
+
+  const fetchedBatches = [];
+  const scheduled = [];
+  const ctx = vm.createContext({
+    console,
+    setTimeout: fn => { scheduled.push(fn); return scheduled.length; },
+    clearTimeout: () => {},
+    setInterval: () => 1,
+    clearInterval: () => {},
+    AbortController,
+    location: { pathname: '/c/conv-root' },
+    React: {
+      createElement: () => null,
+      Fragment: 'fragment',
+      useSyncExternalStore: (_, g) => g(),
+      Component: class {}
+    },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    IC: () => null,
+    JC: () => null,
+    Uy: () => null,
+    MutationObserver: class { observe() {} disconnect() {} },
+    window: { addEventListener() {}, removeEventListener() {} },
+    document: {
+      head: { append() {} },
+      body: { append() {} },
+      documentElement: { setAttribute() {}, removeAttribute() {}, toggleAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      title: '',
+      querySelector: () => null,
+      querySelectorAll: sel => {
+        if (sel.includes('subagent-node')) return domNodes;
+        if (sel.includes('surface-composer-card')) return composerCards;
+        return [];
+      },
+      createElement: () => makeEl(),
+      addEventListener() {}
+    },
+    __agyInitialSettings: { enabled: true, subagentTelemetry: true },
+    __agyNativeAdapter: {
+      subagents: cid => cid === 'conv-root' ? subList : [],
+      composerCascadeId: card => card.__cascadeId || '',
+      wrap: el => el,
+      executionState: () => null,
+      capabilities: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      if (msg.method === 'settings.get') {
+        ctx.__agyPowertoolsReceive(msg.id, { enabled: true, subagentTelemetry: true });
+      } else if (msg.method === 'subagents.stats') {
+        fetchedBatches.push(msg.conversationIds);
+        const items = {};
+        for (const id of msg.conversationIds) {
+          items[id] = { conversationId: id, modelName: 'Gemini 4 Carbon', shortModel: 'Carbon', contextWindow: { usedPercent: 42, usedTokens: 42000 }, telemetry: { stepCount: 10, requestCount: 2, totalTokens: 50000 } };
+        }
+        ctx.__agyPowertoolsReceive(msg.id, { items });
+      } else {
+        ctx.__agyPowertoolsReceive(msg.id, {});
+      }
+    }
+  });
+
+  vm.runInContext(uiCode, ctx);
+  await new Promise(r => setImmediate(r));
+  // First batch must be <= 64 and prioritize open composer (#74), visible DOM (#70..#73), and newest workers
+  assert.ok(fetchedBatches.length >= 1, 'expected initial subagents.stats batch');
+  assert.equal(fetchedBatches[0].length, 64);
+  assert.equal(fetchedBatches[0][0], 'sub-074');
+  assert.deepEqual(fetchedBatches[0].slice(1, 5), ['sub-070', 'sub-071', 'sub-072', 'sub-073']);
+
+  // Trigger scheduled backfill timer -> second batch fetches the remaining 11 older subagents (+ still-running #70)
+  for (const fn of scheduled.splice(0)) fn();
+  await new Promise(r => setImmediate(r));
+  assert.ok(fetchedBatches.length >= 2, 'expected second incremental backfill batch');
+  assert.ok(fetchedBatches[1].includes('sub-000'), 'expected oldest subagent backfilled in batch 2');
+  assert.equal(ctx.__agyPowertools.subagents.filter(s => s.stats).length, 75);
+
+  // Subsequent steady-state refresh only polls the running subagent (#70), NOT all 75 completed subagents
+  const beforePollCount = fetchedBatches.length;
+  for (const fn of scheduled.splice(0)) fn();
+  await new Promise(r => setImmediate(r));
+  if (fetchedBatches.length > beforePollCount) {
+    assert.deepEqual(fetchedBatches.at(-1), ['sub-070']);
+  }
+  ctx.__agyPowertools.dispose();
+});

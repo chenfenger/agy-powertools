@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAppDataDir, listRecentConversations, resolveConversationId, parseSessionData, exportTranscript } from '../../lib/session-parser.mjs';
@@ -6,18 +6,47 @@ import { startNativeIntegration } from '../../lib/native-host.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
-import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybeAutoRelaunchMac, maybePromptPostUpdateRelaunch, recordDebugPortReady, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybeAutoRelaunchMac, maybeAutoRelaunchProxy, maybePromptPostUpdateRelaunch, recordDebugPortReady, recordProxyReady, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { checkProxyPortOpen, inspectProxyRuntime } from '../../lib/proxy.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
 import { checkForUpdates } from '../../lib/updates.mjs';
 import { startUpdate, updateStatus } from '../../lib/update-manager.mjs';
 
 export { getAppDataDir, listRecentConversations, resolveConversationId, parseSessionData, exportTranscript };
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+const isDirectRun = (() => {
+  if (!process.argv[1]) return false;
+  const norm = p => {
+    let resolved = p;
+    try { resolved = realpathSync(p); } catch {}
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  return norm(fileURLToPath(import.meta.url)) === norm(process.argv[1]);
+})();
+
+if (isDirectRun) {
   const paths = installationPaths();
   const settings = createSettingsStore();
   const remoteSsh = isRemoteSshEnvironment();
   let missingPortPolls = 0, shortcutsHealed = false, everConnectedDebugPort = false;
+  // Cold-start proxy auto-relaunch (non-TUN mode): runs locally before renderer/network mount
+  if (!remoteSsh) {
+    const bootSettings = settings.get();
+    const bootProxy = inspectProxyRuntime(bootSettings, process.env);
+    if (bootProxy.reason === 'active') {
+      try { recordProxyReady({ dataDir: paths.data }); } catch {}
+    } else if (bootSettings.enabled !== false && bootProxy.configured && bootProxy.reason === 'not-applied') {
+      void maybeAutoRelaunchProxy({
+        dataDir: paths.data,
+        home: paths.home,
+        enabled: bootSettings.enabled !== false,
+        proxyEnabled: bootSettings.proxyEnabled,
+        proxyUrl: bootSettings.proxyUrl,
+        runtimeProxyReason: bootProxy.reason,
+        checkPort: checkProxyPortOpen
+      }).catch(() => {});
+    }
+  }
   const stop = startNativeIntegration({
     parseSessionData,
     onDebugPortReady() {
@@ -71,14 +100,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         macAutoRelaunch: current.macAutoRelaunch !== false,
         mode: remoteSsh ? 'ssh-remote' : 'local',
         manualCommand: remoteSsh ? '' : manualLaunchCommand({ home: paths.home }),
-        update: updateStatus()
+        proxy: remoteSsh ? null : inspectProxyRuntime(current, process.env),
+        update: updateStatus(undefined, version)
       };
     },
     onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home }),
     onSetSettings: patch => settings.set(patch),
     onCheckUpdate: () => checkForUpdates({ currentVersion: version }),
     onInstallUpdate: ({ version: expectedVersion } = {}) => startUpdate({ currentVersion: version, expectedVersion }),
-    onUpdateStatus: () => updateStatus()
+    onUpdateStatus: () => updateStatus(undefined, version)
   }).catch(() => async () => {});
   const close = await serveRuntime({ directory: join(paths.data, 'runtime'), version, stop, health: stop.health });
   for (const event of ['SIGINT', 'SIGTERM']) process.on(event, async () => { await stop(); await closeWebUi(); await close(); process.exit(0); });

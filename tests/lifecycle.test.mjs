@@ -169,3 +169,52 @@ test('packaged README files strip remote badge images for Antigravity plugin ove
   }
   assert.ok(readFileSync(resolve('README.md'),'utf8').includes('img.shields.io'));
 });
+
+test('package excludes docs/images screenshots, bootstrap copies all worker imports, updateStatus clears stale completed state (Issue #47), and waitForRuntime accepts booted sidecar without compat error', async () => {
+  // 1. Package excludes docs/images/ so bundle.gz stays lightweight (~250KB instead of ~5MB)
+  assert.equal(original.files.some(f => f.path.startsWith('docs/images/')), false);
+
+  // 2. Every transitive local .mjs import of scripts/update-worker.mjs is included in update-manager bootstrap list
+  const seen = new Set();
+  const walk = rel => {
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    const src = readFileSync(resolve(rel), 'utf8');
+    for (const m of src.matchAll(/from\s+['"](\.[^'"]+)['"]/g)) {
+      const target = join(resolve(rel, '..'), m[1]);
+      walk(target.slice(resolve('.').length + 1).replaceAll('\\', '/'));
+    }
+  };
+  walk('scripts/update-worker.mjs');
+  const umSrc = readFileSync(resolve('lib/update-manager.mjs'), 'utf8');
+  for (const mod of seen) {
+    if (mod.startsWith('lib/') && mod.endsWith('.mjs')) {
+      const name = mod.slice(4, -4);
+      assert.ok(umSrc.includes(`'${name}'`), `Missing lib/${name}.mjs in update-manager bootstrap copy list`);
+    }
+  }
+
+  // 3. Issue #47: updateStatus auto-clears stale completed state once currentVersion >= recorded version, and external installPlugin clears stale state
+  const s = sandbox();
+  let close;
+  try {
+    mkdirSync(s.paths.data, { recursive: true });
+    atomicJson(join(s.paths.data, 'update-state.json'), { status: 'completed', version: '2.15.1', at: Date.now() });
+    assert.equal(updateStatus(s.home, '2.15.0').status, 'completed');
+    assert.equal(updateStatus(s.home, '2.15.5').status, 'idle');
+    assert.equal(existsSync(join(s.paths.data, 'update-state.json')), false);
+
+    atomicJson(join(s.paths.data, 'update-state.json'), { status: 'completed', version: '2.15.1', at: Date.now() });
+    await installPlugin({ bundle: original, home: s.home, stop });
+    assert.equal(existsSync(join(s.paths.data, 'update-state.json')), false);
+
+    // 4. waitForRuntime accepts a cleanly booted sidecar with healthy=false & no compatibilityError (e.g. awaiting debug port restart)
+    const dir = join(s.paths.data, 'runtime');
+    close = await serveRuntime({ directory: dir, version: original.version, stop: async () => {}, health: async () => ({ healthy: false, compatibilityError: '' }), exit: () => {} });
+    const booted = await waitForRuntime(dir, original.version, { timeout: 4500 });
+    assert.equal(booted.version, original.version);
+  } finally {
+    await close?.();
+    s.clean();
+  }
+});

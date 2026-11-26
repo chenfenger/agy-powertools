@@ -1263,3 +1263,905 @@ test('loadDashboard returns local dashboard immediately without blocking on slow
   resolveQuota?.({ response: { groups: [] } });
   p.context.__agyPowertools.dispose();
 });
+
+test('theme-adaptive delegated tooltip lazily mounts, adapts to light/dark CSS, clamps viewport, and cleans up on dispose', () => {
+  const listeners = new Map();
+  const timers = [];
+  const created = [];
+  const makeEl = tag => {
+    const attrs = new Map();
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      id: '',
+      className: '',
+      textContent: '',
+      dataset: {},
+      style: {},
+      children: [],
+      isConnected: false,
+      offsetWidth: 260,
+      offsetHeight: 64,
+      append(...items) { for (const c of items) { c.isConnected = true; this.children.push(c); } },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      removeAttribute(k) { attrs.delete(k); },
+      getBoundingClientRect() { return { left: 0, top: 0, width: this.offsetWidth, height: this.offsetHeight }; },
+      remove() { this.isConnected = false; }
+    };
+    return el;
+  };
+  const body = makeEl('body'); body.isConnected = true;
+  const head = makeEl('head'); head.isConnected = true;
+  const docAttrs = new Set();
+  const doc = {
+    readyState: 'complete',
+    head,
+    body,
+    documentElement: {
+      clientWidth: 1000,
+      clientHeight: 700,
+      toggleAttribute(name, force) { if (force === undefined ? !docAttrs.has(name) : force) docAttrs.add(name); else docAttrs.delete(name); },
+      removeAttribute(name) { docAttrs.delete(name); },
+      hasAttribute(name) { return docAttrs.has(name); }
+    },
+    createElement(tag) { const el = makeEl(tag); created.push(el); return el; },
+    addEventListener(type, fn, opts) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+      opts?.signal?.addEventListener?.('abort', () => {
+        const list = listeners.get(type) || [];
+        const idx = list.indexOf(fn);
+        if (idx >= 0) list.splice(idx, 1);
+      }, { once: true });
+    },
+    querySelectorAll() { return []; },
+    querySelector() { return null; }
+  };
+  const fire = (type, evt) => { for (const fn of [...(listeners.get(type) || [])]) fn(evt); };
+  let nextTid = 1;
+  const ctx = vm.createContext({
+    document: doc,
+    location: { pathname: '/' },
+    innerWidth: 1000,
+    innerHeight: 700,
+    AbortController,
+    React: { createElement() { return {}; } },
+    ReactDOM: { createRoot() { throw new Error('No DOM roots expected'); } },
+    HC() {},
+    __agyNativeAdapter: { wrap() {} },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: () => 1,
+    clearInterval() {},
+    setTimeout: (fn, ms) => { const entry = { id: nextTid++, fn, ms, cleared: false }; timers.push(entry); return entry.id; },
+    clearTimeout: id => { const found = timers.find(t => t.id === id); if (found) found.cleared = true; }
+  });
+  vm.runInContext(source, ctx);
+
+  // Lazy creation: only densityStyle exists at boot, with both light and .dark rules
+  assert.equal(created.length, 1);
+  assert.match(created[0].textContent, /\.pt-tip-pop\{[^}]*background:var\(--card\)[^}]*color:var\(--foreground\)/);
+  assert.match(created[0].textContent, /\.dark \.pt-tip-pop\{/);
+  assert.match(created[0].textContent, /\.pt-tip-pop\[data-mono=true\]\{/);
+
+  const makeHost = (attrsMap, rect) => {
+    const attrs = new Map(Object.entries(attrsMap));
+    const host = {
+      isConnected: true,
+      getAttribute: k => (attrs.has(k) ? attrs.get(k) : null),
+      setAttribute: (k, v) => attrs.set(k, String(v)),
+      removeAttribute: k => attrs.delete(k),
+      closest: sel => (sel === '[data-pt-tip]' ? host : null),
+      getBoundingClientRect: () => rect
+    };
+    return host;
+  };
+  const trailNode = makeHost(
+    { 'data-pt-tip': 'npm test && node scripts/build-release.mjs', 'data-pt-tip-mono': 'true', 'data-pt-tip-place': 'left' },
+    { left: 760, right: 980, top: 320, bottom: 344, width: 220, height: 24 }
+  );
+  const cellNode = makeHost(
+    { 'data-pt-tip': '2026-11-25: 1.2M', 'aria-describedby': 'existing-desc' },
+    { left: 20, right: 32, top: 12, bottom: 24, width: 12, height: 12 }
+  );
+
+  // Cold hover waits for 180ms intent delay before creating/opening the portal
+  fire('pointerover', { target: trailNode });
+  assert.equal(created.length, 1);
+  const tipTimer = timers.find(t => !t.cleared && t.ms === 180);
+  assert.ok(tipTimer);
+  tipTimer.fn();
+
+  const pop = body.children.find(c => c.className === 'pt-tip-pop');
+  assert.ok(pop);
+  assert.equal(pop.dataset.open, 'true');
+  assert.equal(pop.dataset.mono, 'true');
+  assert.equal(pop.getAttribute('role'), 'tooltip');
+  assert.equal(pop.children[0].textContent, 'npm test && node scripts/build-release.mjs');
+  assert.equal(trailNode.getAttribute('aria-describedby'), 'agy-pt-tip-pop');
+  // Left placement from x=760 with width=260 and gap=8 -> x=492, cleanly within [10, 730]
+  assert.equal(pop.style.left, '492px');
+
+  // Moving directly to another tooltip host transitions immediately without waiting, clears mono, clamps top->bottom, preserves existing aria-describedby
+  fire('pointerout', { target: trailNode, relatedTarget: cellNode });
+  assert.equal(trailNode.getAttribute('aria-describedby'), null);
+  assert.equal(pop.dataset.open, 'true');
+  assert.equal(pop.dataset.mono, undefined);
+  assert.equal(pop.children[0].textContent, '2026-11-25: 1.2M');
+  assert.equal(cellNode.getAttribute('aria-describedby'), 'existing-desc');
+  assert.equal(pop.style.top, '32px');
+  assert.equal(pop.style.left, '10px');
+
+  // Escape and pointerdown hide immediately; dispose removes portal
+  fire('keydown', { key: 'Escape' });
+  assert.equal(pop.dataset.open, 'false');
+  fire('focusin', { target: trailNode });
+  assert.equal(pop.dataset.open, 'true');
+  fire('pointerdown', { target: trailNode });
+  assert.equal(pop.dataset.open, 'false');
+
+  ctx.__agyPowertools.dispose();
+  assert.equal(pop.isConnected, false);
+});
+
+test('native-panels and native-ui replace raw HTML/SVG title tooltips with theme-adaptive data-pt-tip attributes', () => {
+  const panelsSrc = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  const uiSrc = readFileSync(new URL('../lib/native-ui.js', import.meta.url), 'utf8');
+  assert.equal(panelsSrc.includes("h('title'"), false);
+  assert.match(panelsSrc, /pt-trail-node'[^\n]*'data-pt-tip':call\.detail\|\|call\.label,'data-pt-tip-mono':call\.detail\?'true':undefined,'data-pt-tip-place':'left'/);
+  assert.match(panelsSrc, /pt-donut-segment[^\n]*'data-pt-tip':segTip,'aria-label':segTip/);
+  assert.match(uiSrc, /'data-testid': 'agy-context-ring-trigger',\s*'data-pt-tip':/);
+  assert.match(uiSrc, /'data-testid': 'agy-subagent-badge',\s*'data-subagent-id': subId,\s*'data-pt-tip':/);
+});
+
+
+test('chat image right-click opens MediaContextMenu with attach, copy, and save actions while ignoring file icons', async () => {
+  const listeners = new Map();
+  let renderedTree = null;
+  const attached = [];
+  const makeEl = tag => ({
+    tagName: String(tag || 'div').toUpperCase(),
+    dataset: {},
+    style: {},
+    className: '',
+    isConnected: true,
+    children: [],
+    append(...items) { this.children.push(...items); },
+    appendChild(item) { this.children.push(item); return item; },
+    remove() { this.isConnected = false; },
+    click() { this.clicked = true; },
+    setAttribute() {},
+    getAttribute() { return null; },
+    removeAttribute() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  });
+  const doc = {
+    readyState: 'complete',
+    head: makeEl('head'),
+    body: makeEl('body'),
+    documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+    createElement: tag => makeEl(tag),
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+    },
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const h = (type, props, ...children) => ({ type, props: props || {}, children });
+  const wrapTag = tag => ({ children, ...p }) => h(tag, p, ...(Array.isArray(children) ? children : [children]));
+  const ctx = vm.createContext({
+    document: doc,
+    window: { addEventListener() {}, removeEventListener() {}, innerWidth: 1280, innerHeight: 800 },
+    location: { pathname: '/c/conv-img', href: 'http://127.0.0.1/' },
+    AbortController,
+    Blob,
+    File: class MockFile { constructor(parts, name, opts) { this.parts = parts; this.name = name; this.type = opts?.type || ''; this.size = 4; } },
+    atob,
+    btoa,
+    TextEncoder,
+    React: { createElement: h, Fragment: 'fragment', useState: v => [typeof v === 'function' ? v() : v, () => {}], useLayoutEffect: () => {}, useEffect: () => {} },
+    ReactDOM: { createRoot: () => ({ render(tree) { renderedTree = tree; }, unmount() {} }) },
+    HC: wrapTag('HC'), IC: wrapTag('IC'), JC: wrapTag('JC'), KC: wrapTag('KC'), GC: wrapTag('GC'), dq: wrapTag('dq'),
+    __agyNativeAdapter: {
+      wrap: el => el,
+      attachFileToComposer: async info => { attached.push(info); return { ok: true }; },
+      fileTreeEntry: () => null,
+      executionState: () => null,
+      capabilities: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyInitialSettings: { enabled: true, fileContextMenu: true },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {}
+  });
+  vm.runInContext(source, ctx);
+
+  const fireContextMenu = target => {
+    let prevented = false, stopped = false;
+    for (const fn of listeners.get('contextmenu') || []) {
+      fn({ target, clientX: 120, clientY: 160, preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+    }
+    return { prevented, stopped };
+  };
+
+  // 1. File-type icon (/symbols-icons/...) must NOT trigger MediaContextMenu
+  const iconImg = {
+    getAttribute: k => (k === 'src' ? '/symbols-icons/icons/files/js.svg' : null),
+    closest: sel => (sel.includes('file://') ? null : sel.includes('agent-response') ? {} : sel === 'img' ? iconImg : null)
+  };
+  assert.equal(fireContextMenu(iconImg).prevented, false);
+
+  // 2. Real user-uploaded JPEG image (even with mislabeled data:image/png header) opens MediaContextMenu
+  // Minimal JPEG magic bytes FF D8 FF E0 + 8 bytes -> base64 "/9j/4AAAAAAAAAAA"
+  const chatImg = {
+    alt: 'User uploaded media 1',
+    getAttribute: k => (k === 'src' ? 'data:image/png;base64,/9j/4AAAAAAAAAAA' : null),
+    closest: sel => {
+      if (sel.includes('file://')) return null;
+      if (sel.includes('user-input-step')) return { dataset: { testid: 'user-input-step' } };
+      if (sel === 'img') return chatImg;
+      return null;
+    }
+  };
+  const res = fireContextMenu(chatImg);
+  assert.equal(res.prevented, true);
+  assert.equal(res.stopped, true);
+  assert.ok(renderedTree);
+
+  // Render MediaContextMenu node and trigger "引用到输入框"
+  const expand = node => {
+    if (!node || typeof node !== 'object') return node;
+    if (typeof node.type === 'function') return expand(node.type({ ...(node.props || {}), children: node.children }));
+    return { ...node, children: (node.children || []).map(expand) };
+  };
+  const findTestId = (node, id) => {
+    if (!node || typeof node !== 'object') return null;
+    if (node.props?.['data-testid'] === id) return node;
+    for (const c of Array.isArray(node.children) ? node.children : [node.children]) {
+      const hit = findTestId(c, id);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const menuTree = expand(renderedTree);
+  assert.ok(findTestId(menuTree, 'agy-media-context-menu'));
+  const attachBtn = findTestId(menuTree, 'agy-media-attach-chat');
+  assert.ok(attachBtn);
+  assert.ok(findTestId(menuTree, 'agy-media-copy-image'));
+  assert.ok(findTestId(menuTree, 'agy-media-save-image'));
+  await attachBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].mode, 'media');
+  assert.equal(attached[0].mimeType, 'image/jpeg');
+  assert.match(attached[0].name, /\.jpg$/);
+  assert.equal(attached[0].base64, '/9j/4AAAAAAAAAAA');
+
+  ctx.__agyPowertools.dispose();
+});
+
+
+test('response toolbar Copy button overrides clipboard with only the final response while preserving native check animation (Issue #50)', async () => {
+  const listeners = new Map();
+  const copiedValues = [];
+  const makeEl = () => ({ dataset: {}, style: {}, className: '', isConnected: true, children: [], append() {}, appendChild() {}, remove() {}, setAttribute() {}, getAttribute: () => null, removeAttribute() {}, querySelector: () => null, querySelectorAll: () => [] });
+  const doc = {
+    readyState: 'complete',
+    head: makeEl(),
+    body: makeEl(),
+    documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+    createElement: () => makeEl(),
+    addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const clipProto = { writeText: async text => { copiedValues.push(text); } };
+  const clipboard = Object.create(clipProto);
+  const ctx = vm.createContext({
+    document: doc,
+    window: { addEventListener() {}, removeEventListener() {} },
+    navigator: { clipboard },
+    location: { pathname: '/c/conv-copy' },
+    AbortController,
+    React: { createElement: () => null },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyNativeAdapter: {
+      wrap: el => el,
+      finalResponseText: () => ({ finalText: 'Final clean answer only.', hasIntermediate: true }),
+      executionState: () => null,
+      capabilities: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyInitialSettings: { enabled: true, stageUpdates: true },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {}
+  });
+  vm.runInContext(source, ctx);
+
+  const copyBtn = { closest: sel => (sel.includes('cascade-system-message-toolbar') ? copyBtn : null) };
+  for (const fn of listeners.get('click') || []) fn({ target: copyBtn });
+  // Simulate native onClick writing full turn (intermediate updates + tool logs + final answer)
+  await clipboard.writeText('Intermediate update...\nRan npm test\nFinal clean answer only.');
+  assert.deepEqual(copiedValues, ['Final clean answer only.']);
+
+  // Normal unrelated clipboard copies are untouched
+  await clipboard.writeText('Normal copy text');
+  assert.deepEqual(copiedValues, ['Final clean answer only.', 'Normal copy text']);
+
+  ctx.__agyPowertools.dispose();
+  assert.equal(Object.prototype.hasOwnProperty.call(clipboard, 'writeText'), false);
+});
+
+
+test('auto-switch waits for background running tabs and interactive banner supports target override, pause/resume, and immediate switch', async () => {
+  let runningIds = ['bg-conv-1'];
+  const switchedCalls = [];
+  const intervals = [];
+  const makeEl = tag => {
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      dataset: {},
+      style: {},
+      className: '',
+      textContent: '',
+      value: '',
+      children: [],
+      listeners: new Map(),
+      isConnected: true,
+      append(...items) { this.children.push(...items); },
+      appendChild(item) { this.children.push(item); return item; },
+      remove() { this.isConnected = false; },
+      setAttribute() {},
+      getAttribute() { return null; },
+      removeAttribute() {},
+      addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); },
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+    return el;
+  };
+  const body = makeEl('body');
+  const doc = {
+    readyState: 'complete',
+    head: makeEl('head'),
+    body,
+    documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+    createElement: tag => makeEl(tag),
+    addEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const candA = { id: 'acct-b', email: 'b@example.com', alias: '备用号B' };
+  const candB = { id: 'acct-c', email: 'c@example.com', alias: '备用号C' };
+  const ctx = vm.createContext({
+    document: doc,
+    window: { addEventListener() {}, removeEventListener() {} },
+    location: { pathname: '/c/active-conv' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyInitialSettings: { enabled: true, multiAccount: true, autoSwitchAccount: true },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      executionState: () => ({ conversationId: 'active-conv', status: 1 }),
+      runningConversationIds: () => runningIds,
+      capabilities: () => ({ email: 'a@example.com', model: 'Claude Opus 5.5', models: [{ modelId: 'Claude Opus 5.5' }] }),
+      service: () => ({
+        retrieveUserQuotaSummary: async () => ({
+          response: { groups: [{ displayName: 'Claude and GPT models', buckets: [{ bucketId: '3p-5h', remainingFraction: 0, resetTimeMs: Date.now() + 3600_000 }] }] }
+        })
+      }),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      if (msg.method === 'settings.get') ctx.__agyPowertoolsReceive(msg.id, { enabled: true, multiAccount: true, autoSwitchAccount: true });
+      else if (msg.method === 'accounts.list' || msg.method === 'accounts.syncActive') {
+        ctx.__agyPowertoolsReceive(msg.id, { activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'a@example.com' }, candA, candB] });
+      } else if (msg.method === 'accounts.autoSwitchCandidate') {
+        assert.equal(msg.activeModel, 'Claude Opus 5.5');
+        ctx.__agyPowertoolsReceive(msg.id, { candidate: candA, candidates: [candA, candB], cooldownRemainingMs: 0 });
+      } else if (msg.method === 'accounts.switch') {
+        switchedCalls.push(msg);
+        ctx.__agyPowertoolsReceive(msg.id, { ok: true, relaunching: true });
+      } else {
+        ctx.__agyPowertoolsReceive(msg.id, {});
+      }
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: () => 1,
+    clearTimeout: () => {}
+  });
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  // 1. Background tab 'bg-conv-1' is running -> banner must NOT appear yet
+  assert.equal(body.children.some(c => c.dataset?.testid === 'agy-autoswitch-banner'), false);
+
+  // 2. Once background tab finishes, next poll opens interactive banner with target dropdown & buttons
+  runningIds = [];
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  assert.ok(mainPoll);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const banner = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner, 'expected interactive autoswitch banner');
+
+  const walk = (node, pred) => {
+    if (!node) return null;
+    if (pred(node)) return node;
+    for (const c of node.children || []) { const hit = walk(c, pred); if (hit) return hit; }
+    return null;
+  };
+  const select = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-target-select');
+  const menu = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-target-menu');
+  const optC = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-target-option-acct-c');
+  const pauseBtn = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-pause');
+  const nowBtn = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-now');
+  assert.ok(select && menu && optC && pauseBtn && nowBtn);
+  assert.equal(select.tagName, 'BUTTON', 'auto-switch banner must use custom Antigravity dropdown rather than native <select>');
+  assert.equal(walk(banner, n => n.tagName === 'SELECT'), null);
+
+  // Open custom picker, select candB (acct-c), and pause countdown
+  for (const fn of select.listeners.get('click') || []) fn({ stopPropagation() {} });
+  for (const fn of optC.listeners.get('click') || []) fn({ stopPropagation() {} });
+  for (const fn of pauseBtn.listeners.get('click') || []) fn();
+  const countdownTick = intervals.find(i => i.ms === 1000 && !i.cleared);
+  for (let i = 0; i < 10; i++) countdownTick.fn();
+  assert.equal(switchedCalls.length, 0, 'paused countdown must not switch');
+
+  // Click Switch Now while another background tab starts running -> defers while preserving depletedGroupKey ('claude')
+  runningIds = ['bg-conv-2'];
+  for (const fn of nowBtn.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 0);
+
+  // Once background tab finishes, deferred resume re-queries candidates with preserved group key and lets us switch
+  runningIds = [];
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const banner2 = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner2, 'deferred banner must reappear once background tasks finish');
+  const optC2 = walk(banner2, n => n.dataset?.testid === 'agy-autoswitch-target-option-acct-c');
+  const nowBtn2 = walk(banner2, n => n.dataset?.testid === 'agy-autoswitch-now');
+  for (const fn of optC2.listeners.get('click') || []) fn({ stopPropagation() {} });
+  for (const fn of nowBtn2.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 1);
+  assert.equal(switchedCalls[0].accountId, 'acct-c');
+
+  ctx.__agyPowertools.dispose();
+});
+
+test('native-ui auto-switch resets switchingInProgress when relaunching is false without manualRestartRequired and preserves depletedGroupKey on deferral', async () => {
+  const source = readFileSync(new URL('../lib/native-ui.js', import.meta.url), 'utf8');
+  const intervals = [];
+  const candidateGroupKeys = [];
+  const switchedCalls = [];
+  let runningIds = [];
+  let switchReply = { ok: true, unchanged: true, relaunching: false, manualRestartRequired: false };
+  const makeEl = tag => ({
+    tagName: String(tag || 'div').toUpperCase(),
+    dataset: {},
+    style: {},
+    className: '',
+    textContent: '',
+    children: [],
+    listeners: new Map(),
+    isConnected: true,
+    append(...items) { this.children.push(...items); },
+    appendChild(item) { this.children.push(item); return item; },
+    remove() { this.isConnected = false; },
+    contains() { return false; },
+    setAttribute() {},
+    getAttribute() { return null; },
+    removeAttribute() {},
+    addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); },
+    removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  });
+  const body = makeEl('body');
+  const candA = { id: 'acct-b', email: 'b@example.com', alias: '备用号B' };
+  let capturedEnv = null;
+  const ctx = vm.createContext({
+    document: {
+      readyState: 'complete',
+      head: makeEl('head'),
+      body,
+      documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      createElement: tag => makeEl(tag),
+      addEventListener() {},
+      removeEventListener() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    },
+    window: { addEventListener() {}, removeEventListener() {} },
+    location: { pathname: '/c/active-conv' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyPanels: env => { capturedEnv = env; return { dispose() {} }; },
+    __agyInitialSettings: { enabled: true, multiAccount: true, autoSwitchAccount: true },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => ({ conversationId: 'active-conv', status: 1 }),
+      runningConversationIds: () => runningIds,
+      capabilities: () => ({ email: 'a@example.com', model: 'Claude Opus 5.5', models: [{ modelId: 'Claude Opus 5.5' }] }),
+      service: () => ({
+        retrieveUserQuotaSummary: async () => ({
+          response: { groups: [{ displayName: 'Claude and GPT models', buckets: [{ bucketId: '3p-5h', remainingFraction: 0, resetTimeMs: Date.now() + 3600_000 }] }] }
+        })
+      }),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      if (msg.method === 'settings.get') ctx.__agyPowertoolsReceive(msg.id, { enabled: true, multiAccount: true, autoSwitchAccount: true });
+      else if (msg.method === 'accounts.list' || msg.method === 'accounts.syncActive') {
+        ctx.__agyPowertoolsReceive(msg.id, { activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'a@example.com' }, candA] });
+      } else if (msg.method === 'accounts.autoSwitchCandidate') {
+        candidateGroupKeys.push(msg.depletedGroupKey);
+        ctx.__agyPowertoolsReceive(msg.id, { candidate: candA, candidates: [candA], cooldownRemainingMs: 0 });
+      } else if (msg.method === 'accounts.switch') {
+        switchedCalls.push(msg);
+        ctx.__agyPowertoolsReceive(msg.id, switchReply);
+      } else if (msg.method === 'accounts.refreshLocalQuotas') {
+        ctx.__agyPowertoolsReceive(msg.id, { ok: true, activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'a@example.com' }, candA] });
+      } else {
+        ctx.__agyPowertoolsReceive(msg.id, {});
+      }
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: () => 1,
+    clearTimeout: () => {}
+  });
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.ok(capturedEnv);
+
+  const walk = (node, pred) => {
+    if (!node) return null;
+    if (pred(node)) return node;
+    for (const c of node.children || []) { const hit = walk(c, pred); if (hit) return hit; }
+    return null;
+  };
+  const banner1 = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner1);
+  assert.equal(candidateGroupKeys.at(-1), 'claude');
+
+  // 1. Trigger Switch Now while runningIds becomes non-empty -> defers preserving 'claude'
+  runningIds = ['bg-1'];
+  const now1 = walk(banner1, n => n.dataset?.testid === 'agy-autoswitch-now');
+  for (const fn of now1.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 0);
+
+  // 2. Resume after background task ends -> must pass 'claude' (NOT '') to accounts.autoSwitchCandidate!
+  runningIds = [];
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(candidateGroupKeys.at(-1), 'claude', 'deferred auto-switch must preserve depletedGroupKey');
+
+  // 3. Switch returns unchanged / relaunching: false without manualRestartRequired -> MUST NOT wedge switchingInProgress!
+  const banner2 = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner2);
+  const now2 = walk(banner2, n => n.dataset?.testid === 'agy-autoswitch-now');
+  for (const fn of now2.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 1);
+
+  // Prove switchingInProgress was cleanly reset: refreshAccountQuotas succeeds instead of skipping!
+  const postRefresh = await capturedEnv.refreshAccountQuotas();
+  assert.equal(postRefresh.ok, true);
+  assert.notEqual(postRefresh.skipped, true);
+  ctx.__agyPowertools.dispose();
+});
+
+test('long-conversation polling skips ring re-renders, completed response fiber walks, and unchanged refresh mounts (Issue #51)', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-long-51';
+  const intervals = [];
+  let fakeNow = 1_795_700_000_000;
+  p.context.Date = class extends Date { static now() { return fakeNow; } };
+  p.context.setInterval = (fn, ms) => { const entry = { fn, ms }; intervals.push(entry); return intervals.length; };
+  p.context.clearInterval = () => {};
+
+  let ringRenders = 0;
+  let fiberWalks = 0;
+  const card = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const flexParent = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const model = {
+    isConnected: true,
+    textContent: 'Gemini 4 Carbon',
+    parentElement: flexParent,
+    nextSibling: null,
+    closest: sel => sel === '.surface-composer-card' ? card : null
+  };
+  const actionRow = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const copyBtn = { parentElement: actionRow, closest: () => null };
+  const scopeEl = { querySelector: sel => sel === '[aria-label="Bad response"]' ? copyBtn : null, querySelectorAll: () => [] };
+  const responseEl = {
+    isConnected: true,
+    firstChild: null,
+    children: [],
+    insertBefore(n) { n.isConnected = true; this.children.unshift(n); },
+    closest: sel => sel === '[data-turn-content]' ? scopeEl : null,
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  p.document.querySelectorAll = sel => {
+    if (sel === '[data-testid="model-selector-trigger"]') return [model];
+    if (sel === '[data-testid="agent-response"]') return [responseEl];
+    return [];
+  };
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  p.context.HU = m => m?.index;
+  p.context.React = { createElement: (type, props, ...children) => ({ type, props: props || {}, children }) };
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render() { if (mount.dataset?.agyPowertoolsRoot === 'ring') ringRenders++; },
+        unmount() {}
+      };
+    }
+  };
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.composerCascadeId = () => 'conv-long-51';
+  p.context.__agyNativeAdapter.fiber = () => {
+    fiberWalks++;
+    return { memoizedProps: { container: { steps: [{ step: { case: 'userInput' }, metadata: { index: 0 } }] } }, return: null };
+  };
+
+  let stateVersion = 1;
+  let stateRequests = 0;
+  const makeStateReply = () => ({
+    conversationId: 'conv-long-51',
+    modelName: 'Gemini 4 Carbon',
+    costUsd: 0.12,
+    contextWindow: { usedTokens: 42000 * stateVersion, maxTokens: 1000000, usedPercent: 4.2 * stateVersion, inputTokens: 1000, cacheReadTokens: 41000, categories: [] },
+    telemetry: { turnCount: 1, stepCount: 5, totalTokens: 45000 * stateVersion, requestCount: 2, errorCount: 0, toolCount: 1, tps: 88, latestTps: 88, cacheHitPercent: 97.6 },
+    progress: { status: 'complete', phase: 'done', phaseDetail: '', toolCount: 1, recentActivity: [], tasks: [] },
+    turns: [{ turnNumber: 1, stepIndexStart: 0, stepIndexEnd: 4, status: 'complete', completedAtIso: '2026-11-25T00:00:00Z', durationMs: 4200, toolCalls: [] }],
+    requests: [{ id: 'req-1', timestampMs: 1_795_699_995_000 }],
+    errors: [],
+    settings: { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' }
+  });
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' });
+      else if (req.method === 'state') { stateRequests++; p.context.__agyPowertoolsReceive(req.id, makeStateReply()); }
+      else p.context.__agyPowertoolsReceive(req.id, { ok: true });
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 25));
+
+  const initialRingRenders = ringRenders;
+  const initialFiberWalks = fiberWalks;
+  const initialStateReqs = stateRequests;
+  assert.ok(initialRingRenders >= 1);
+  assert.equal(initialFiberWalks, 1);
+
+  const mainPoll = intervals.find(i => i.ms === 2000);
+  assert.ok(mainPoll);
+
+  // Idle poll within 6s skips state IPC completely
+  fakeNow += 2000;
+  mainPoll.fn();
+  await new Promise(r => setTimeout(r, 15));
+  assert.equal(stateRequests, initialStateReqs);
+
+  // Idle poll after 6s fetches a brand-new JSON object with identical values -> 0 new ring renders and 0 new fiber walks
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(stateRequests, initialStateReqs + 1);
+  assert.equal(ringRenders, initialRingRenders);
+  assert.equal(fiberWalks, initialFiberWalks);
+
+  // When token usage actually changes, ring re-renders once while completed historical turn still skips fiber walk!
+  stateVersion = 2;
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(ringRenders, initialRingRenders + 1);
+  assert.equal(fiberWalks, initialFiberWalks);
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('SSH remote window hides local AccountSwitcher, preserves native settings button, and skips accounts.syncActive (Issue #57)', async () => {
+  const p = page(true);
+  p.context.sshRemote = { kind: 'ssh', host: 'devbox' };
+  const calls = [];
+  let mountedSwitcher = 0;
+  const settingsParent = { children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const settingsBtn = { isConnected: true, parentElement: settingsParent, nextSibling: null };
+  p.document.querySelector = sel => sel === '[data-testid="settings-button"]' ? settingsBtn : null;
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render() { if (mount.dataset?.agyPowertoolsRoot === 'account-switcher') mountedSwitcher++; },
+        unmount() {}
+      };
+    }
+  };
+  p.context.__agyPanels = () => ({ Page: () => null, Sidebar: () => null, AccountSwitcher: () => null, dispose() {} });
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.capabilities = () => ({ email: 'remote@example.com', name: 'Remote User' });
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: async () => ({ response: { groups: [] } })
+  });
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    calls.push(req.method);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, accountSwitcher: true });
+      else p.context.__agyPowertoolsReceive(req.id, { ok: true, estimates: [] });
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, accountSwitcher: true };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 25));
+
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-account-switcher'), false);
+  assert.equal(mountedSwitcher, 0);
+  assert.equal(calls.includes('accounts.syncActive'), false);
+  assert.equal(calls.includes('accounts.list'), false);
+  p.context.__agyPowertools.dispose();
+});
+
+test('auto-check update banner shows one-click update/dismiss and optional autoInstallUpdates waits for idle same-major only (Issue #45)', async () => {
+  const timeouts = [];
+  const calls = [];
+  let runningIds = ['busy-conv-1'];
+  let remoteReply = {
+    status: 'available',
+    version: '2.17.0',
+    releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.17.0',
+    notes: '## 中文说明\n- **体验优化**：新增低频自动查更新与轻量提醒',
+    canInstall: true,
+    dismissedVersion: '',
+    clientUpgraded: false
+  };
+  const makeEl = tag => {
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      dataset: {},
+      style: {},
+      className: '',
+      textContent: '',
+      children: [],
+      listeners: new Map(),
+      isConnected: true,
+      append(...items) { this.children.push(...items); },
+      appendChild(item) { this.children.push(item); return item; },
+      remove() { this.isConnected = false; },
+      setAttribute() {},
+      getAttribute: () => null,
+      removeAttribute() {},
+      addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); },
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+    return el;
+  };
+  const body = makeEl('body');
+  const intervals = [];
+  const settings = { enabled: true, autoCheckUpdates: true, autoInstallUpdates: false, language: 'zh-CN' };
+  let capturedEnv = null;
+  const ctx = vm.createContext({
+    document: {
+      readyState: 'complete',
+      head: makeEl('head'),
+      body,
+      documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      createElement: tag => makeEl(tag),
+      addEventListener() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    },
+    window: { addEventListener() {}, removeEventListener() {} },
+    navigator: { userAgent: 'Antigravity/2.36.0' },
+    location: { pathname: '/c/conv-upd' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyPanels: env => { capturedEnv = env; return { dispose() {} }; },
+    __agyInitialSettings: { ...settings },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => ({ conversationId: 'conv-upd', status: 1 }),
+      runningConversationIds: () => runningIds,
+      capabilities: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      calls.push(msg);
+      if (msg.method === 'settings.get') ctx.__agyPowertoolsReceive(msg.id, { ...settings });
+      else if (msg.method === 'settings.set') { Object.assign(settings, msg.settings); ctx.__agyPowertoolsReceive(msg.id, { ...settings }); }
+      else if (msg.method === 'update.autoCheck') ctx.__agyPowertoolsReceive(msg.id, { ...remoteReply });
+      else if (msg.method === 'update.dismiss') { remoteReply.dismissedVersion = msg.version; ctx.__agyPowertoolsReceive(msg.id, { ...remoteReply }); }
+      else if (msg.method === 'update.install') ctx.__agyPowertoolsReceive(msg.id, { status: 'preparing', version: msg.version });
+      else if (msg.method === 'update.status') ctx.__agyPowertoolsReceive(msg.id, { status: 'completed', version: '2.17.0' });
+      else ctx.__agyPowertoolsReceive(msg.id, {});
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: (fn, ms) => { const item = { fn, ms, cleared: false }; timeouts.push(item); return timeouts.length; },
+    clearTimeout: id => { if (timeouts[id - 1]) timeouts[id - 1].cleared = true; }
+  });
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+
+  // Trigger startup 15s update check timer
+  const startupCheck = timeouts.find(t => t.ms === 15000 && !t.cleared);
+  assert.ok(startupCheck);
+  startupCheck.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  const autoReq = calls.find(c => c.method === 'update.autoCheck');
+  assert.ok(autoReq);
+  assert.equal(autoReq.clientVersion, '2.36.0');
+  const banner = body.children.find(c => c.dataset?.testid === 'agy-update-prompt-banner' && c.isConnected);
+  assert.ok(banner, 'expected bottom-right update reminder banner');
+  const walk = (node, pred) => {
+    if (!node) return null;
+    if (pred(node)) return node;
+    for (const c of node.children || []) { const hit = walk(c, pred); if (hit) return hit; }
+    return null;
+  };
+  assert.ok(walk(banner, n => n.dataset?.testid === 'agy-update-banner-install'));
+  const dismissBtn = walk(banner, n => n.dataset?.testid === 'agy-update-banner-dismiss');
+  assert.ok(dismissBtn);
+
+  // Clicking dismiss persists update.dismiss and removes banner
+  for (const fn of dismissBtn.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(calls.some(c => c.method === 'update.dismiss' && c.version === '2.17.0'), true);
+  assert.equal(banner.isConnected, false);
+
+  // New version arrives + autoInstallUpdates enabled -> waits while runningIds non-empty, then auto-installs once idle
+  remoteReply = { ...remoteReply, version: '2.18.0', dismissedVersion: '' };
+  await capturedEnv.change({ autoInstallUpdates: true });
+  await capturedEnv.checkForUpdateNotice({ force: true });
+  assert.equal(calls.some(c => c.method === 'update.install'), false, 'must wait while a turn is running');
+
+  runningIds = [];
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(calls.some(c => c.method === 'update.install' && c.version === '2.18.0'), true);
+
+  ctx.__agyPowertools.dispose();
+});

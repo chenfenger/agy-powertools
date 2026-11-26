@@ -90,3 +90,14 @@ test('About renders GitHub release notes Markdown safely without raw syntax or u
   assert.deepEqual(codes,['v2.13.7']);
   assert.deepEqual(links,['https://github.com/WhiteBr1ck/agy-powertools']);
 });
+
+test('About resets stale completed update state when running version is already >= completed version (Issue #47)', async () => {
+  const ui = surface({ status: 'current', version: '2.12.0' });
+  ui.setStatus({ status: 'completed', version: '2.12.0' });
+  ui.render();
+  ui.effects[0]();
+  await tick();
+  const tree = ui.render();
+  assert.ok(ui.find(tree, 'agy-check-update'));
+  assert.equal(ui.find(tree, 'agy-install-update'), null);
+});

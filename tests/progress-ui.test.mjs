@@ -186,3 +186,65 @@ test('progress renders subagent and background phases in expanded and collapsed 
   const singleEn = renderWith({ status: 'running', phase: 'subagent', activeSubagentCount: 1, phaseDetail: 'UI Verification', elapsedMs: 75000 }, 'en', true);
   assert.ok(singleEn.includes('Subagent running: UI Verification'));
 });
+
+test('ProgressOrb maps live phases and tool kinds to distinct orb modes and preserves progressbar semantics without raw title', () => {
+  const R = { createElement: (type, props, ...children) => ({ type, props: props || {}, children }), useSyncExternalStore: (_, snapshot) => snapshot() };
+  const context = vm.createContext({ React: R, dq: 'icon', document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } } });
+  vm.runInContext(readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8'), context);
+  const panels = context.__agyPanels({
+    t: v => v,
+    options: () => ({ progress: true, language: 'zh-CN' }),
+    state: () => ({ conversationId: 'conv-orb', progress: { status: 'running', phase: 'tool', phaseDetail: 'read_file', tasks: [{ title: 'Step 1', status: 'complete' }, { title: 'Step 2', status: 'running' }] } }),
+    subscribe: () => () => {},
+    revision: () => 0
+  });
+  const resolve = panels.resolveProgressOrbMode;
+  assert.equal(resolve({ status: 'running', phase: 'thinking', phaseDetail: 'thinking' }), 'solving');
+  assert.equal(resolve({ status: 'running', phase: 'tool', phaseDetail: 'read_file' }), 'searching');
+  assert.equal(resolve({ status: 'running', phase: 'tool', phaseDetail: 'grep_search' }), 'searching');
+  assert.equal(resolve({ status: 'running', phase: 'tool', phaseDetail: 'run_command' }), 'working');
+  assert.equal(resolve({ status: 'running', phase: 'tool', phaseDetail: 'edit_file' }), 'working');
+  assert.equal(resolve({ status: 'running', phase: 'streaming' }), 'composing');
+  assert.equal(resolve({ status: 'running', phase: 'subagent', phaseDetail: 'Explorer' }), 'connecting');
+  assert.equal(resolve({ status: 'running', phase: 'background' }), 'connecting');
+  assert.equal(resolve({ status: 'running', phase: 'retrying' }), 'connecting');
+  assert.equal(resolve({ status: 'running', phase: 'thinking', phaseDetail: 'waiting-model' }), 'connecting');
+  assert.equal(resolve({ status: 'running', phase: 'waiting', phaseDetail: 'run_command' }), 'breathing');
+  assert.equal(resolve({ status: 'complete' }), 'complete');
+  assert.equal(resolve({ status: 'stopped' }), 'stopped');
+  assert.equal(resolve({ status: 'error' }), 'error');
+  assert.equal(resolve({ status: 'idle' }), 'idle');
+
+  const orbNode = panels.ProgressOrb({ percent: 50, status: 'running', phase: 'tool', phaseDetail: 'read_file' });
+  assert.equal(orbNode.props['data-testid'], 'agy-progress-orb');
+  assert.equal(orbNode.props['data-orb-mode'], 'searching');
+  assert.equal(orbNode.props.role, 'progressbar');
+  assert.equal(orbNode.props['aria-valuenow'], 50);
+  assert.equal(orbNode.props.title, undefined);
+  assert.equal(orbNode.props['data-pt-tip'], '检索查阅 50%');
+
+  // Static terminal states must not schedule requestAnimationFrame
+  let rafCalls = 0;
+  let effectCleanup = null;
+  const canvasCtx = { clearRect() {}, save() {}, restore() {}, setTransform() {}, beginPath() {}, arc() {}, fill() {}, stroke() {}, moveTo() {}, lineTo() {}, closePath() {}, roundRect() {}, createRadialGradient: () => ({ addColorStop() {} }) };
+  const R2 = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    useSyncExternalStore: (_, snapshot) => snapshot(),
+    useRef: v => ({ current: v }),
+    useEffect: fn => { effectCleanup = fn(); }
+  };
+  const ctx2 = vm.createContext({
+    React: R2,
+    dq: 'icon',
+    devicePixelRatio: 2,
+    requestAnimationFrame: () => { rafCalls++; return 1; },
+    cancelAnimationFrame: () => {},
+    document: { documentElement: { classList: { contains: () => false } }, createElement: () => ({ dataset: {}, remove() {}, getContext: () => canvasCtx }), head: { append() {} } }
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8'), ctx2);
+  const p2 = ctx2.__agyPanels({ t: v => v, options: () => ({ progress: true, language: 'zh-CN' }), state: () => null, subscribe: () => () => {}, revision: () => 0 });
+  const doneEl = p2.ProgressOrb({ status: 'complete' });
+  assert.equal(doneEl.props['data-orb-mode'], 'complete');
+  assert.equal(rafCalls, 0);
+  effectCleanup?.();
+});

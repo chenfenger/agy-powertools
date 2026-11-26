@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseChecklist } from '../lib/progress.mjs';
-import { createPricingStore, estimateCost, parseOfficialPricing, parsePartnerPricing } from '../lib/pricing.mjs';
+import { createPricingStore, estimateCost, parseOfficialPricing, parsePartnerPricing, resolveRate } from '../lib/pricing.mjs';
 import { createQuotaTracker } from '../lib/quota.mjs';
 import { requestEvents } from '../lib/analytics.mjs';
 test('buffered provider responses use whole-request timing while genuine streamed responses exclude TTFT',()=>{
@@ -117,4 +117,29 @@ test('parsePartnerPricing dynamically parses current and future Claude models wi
   assert.equal(rates[0].input,4);assert.equal(rates[0].output,20);assert.equal(rates[0].cache,0.2);assert.equal(rates[0].cacheWrite,5);
   assert.equal(rates[1].cacheWrite,0.125);
   assert.equal(rates[2].input,6);assert.equal(rates[2].cache,0.3);assert.equal(rates[2].cacheWrite,undefined);
+});
+
+test('pricingMode standard uses official post-promo list prices while promo respects introductory dates and isolates quota checkpoints',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'agy-pricing-mode-'));
+  try{
+    const rates=createPricingStore(dir).get().rates;
+    const carbon=rates.find(r=>r.model==='gemini-4-carbon');
+    assert.deepEqual(resolveRate(carbon,{pricingMode:'standard',date:'2026-11-24'}).active,{input:4,cache:0.2,output:20});
+    assert.equal(resolveRate(carbon,{pricingMode:'standard',date:'2026-11-24'}).promoActive,true);
+    assert.equal(resolveRate(carbon,{pricingMode:'promo',date:'2026-11-24'}).active.input,2);
+    assert.equal(resolveRate(carbon,{pricingMode:'promo',date:'2026-12-01'}).promoActive,false);
+    const req={model:'Gemini 4 Carbon (High)',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:Date.parse('2026-11-24T12:00:00Z')};
+    assert.equal(estimateCost(req,rates,{pricingMode:'promo'}),12.1);
+    assert.equal(estimateCost(req,rates,{pricingMode:'standard'}),24.2);
+
+    // Quota tracker isolates checkpoints by pricingMode so switching basis mid-cycle reflects the selected mode cleanly
+    const tracker=createQuotaTracker(dir);
+    const resetTimeMs=Date.parse('2026-11-24T17:00:00Z');
+    const baseMs=resetTimeMs-4*3600*1000;
+    const reqs=[0,1,2].map(i=>({model:'Gemini 4 Carbon (High)',timestampMs:baseMs+i*1000,durationMs:500,inputTokens:50000,cacheReadTokens:0,outputTokens:0}));
+    const promoEst=tracker.observe([{buckets:[{bucketId:'gemini-5h',window:'5h',remainingFraction:0.99,resetTimeMs}]}],reqs,rates,baseMs+10000,'',{pricingMode:'promo'}).estimates[0];
+    const stdEst=tracker.observe([{buckets:[{bucketId:'gemini-5h',window:'5h',remainingFraction:0.99,resetTimeMs}]}],reqs,rates,baseMs+15000,'',{pricingMode:'standard'}).estimates[0];
+    assert.ok(Math.abs(promoEst.estimateUsd-30)<1e-9);
+    assert.ok(Math.abs(stdEst.estimateUsd-60)<1e-9);
+  }finally{rmSync(dir,{recursive:true,force:true});}
 });
